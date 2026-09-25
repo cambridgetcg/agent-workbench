@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-workbench"
+version = "0.1.0"
+description = "Local diagnostics, durable workflows and portable handoffs for coding agents"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+agent-workbench = "agent_workbench.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agent_workbench*"]

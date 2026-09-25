@@ -1,0 +1,9 @@
+{
+  "name": "agent-workbench",
+  "version": "0.1.0",
+  "description": "Local diagnostics, durable workflows and portable handoffs shared with Codex.",
+  "skills": "./skills/",
+  "author": {
+    "name": "Local developer"
+  }
+}

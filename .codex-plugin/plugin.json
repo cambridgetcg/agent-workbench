@@ -1,0 +1,18 @@
+{
+  "name": "agent-workbench",
+  "version": "0.1.0+codex.20260925091818",
+  "description": "Local diagnostics, durable workflows and portable handoffs for Codex and Claude Code.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Workbench",
+    "shortDescription": "Inspect, run and hand off local agent work.",
+    "longDescription": "Inspect redacted configuration and auth health, run saved task dependencies with stop and time controls, and transfer explicit work handoffs between Codex and Claude Code.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Agent Workbench to diagnose my local agent setup or manage a shared workflow."
+  }
+}

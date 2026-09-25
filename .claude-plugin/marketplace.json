@@ -1,0 +1,17 @@
+{
+  "name": "agent-workbench-local",
+  "owner": {
+    "name": "Local developer"
+  },
+  "plugins": [
+    {
+      "name": "agent-workbench",
+      "source": "./",
+      "description": "Local diagnostics, durable workflows and portable handoffs shared with Codex.",
+      "version": "0.1.0"
+    }
+  ],
+  "metadata": {
+    "description": "Shared local workflows, diagnostics and handoffs for coding agents."
+  }
+}

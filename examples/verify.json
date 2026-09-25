@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "Inspect and verify",
+  "goal": "Understand the requested change and report the relevant test result.",
+  "tasks": [
+    {
+      "id": "inspect",
+      "harness": "codex",
+      "prompt": "Read this project's instructions and identify the smallest relevant verification for the user's requested change. Report your reasoning and do not modify files."
+    },
+    {
+      "id": "verify",
+      "harness": "astra",
+      "depends_on": ["inspect"],
+      "prompt": "Use the predecessor's findings to run the relevant verification for the requested change. Report what actually ran, its result, and any remaining uncertainty. Do not modify files."
+    }
+  ]
+}
