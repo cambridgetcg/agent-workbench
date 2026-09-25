@@ -50,7 +50,7 @@ def validate_manifest(manifest: dict) -> dict:
     result = {"version": 1, "name": name, "goal": goal, "tasks": []}
     seen = set()
     for task in tasks:
-        if not isinstance(task, dict) or set(task) - {"id", "harness", "depends_on", "prompt", "argv", "model", "effort", "timeout_seconds"}:
+        if not isinstance(task, dict) or set(task) - {"id", "harness", "depends_on", "prompt", "argv", "model", "effort", "timeout_seconds", "adapter", "workspace"}:
             raise ValueError("Task contains unsupported fields.")
         ident = task.get("id")
         if not isinstance(ident, str) or not TASK_ID.fullmatch(ident) or ident in seen:
@@ -63,6 +63,16 @@ def validate_manifest(manifest: dict) -> dict:
         if not isinstance(deps, list) or any(not isinstance(x, str) or not TASK_ID.fullmatch(x) for x in deps) or len(set(deps)) != len(deps):
             raise ValueError("Invalid task dependencies.")
         out = {"id": ident, "harness": harness, "depends_on": list(deps)}
+        if "adapter" in task:
+            if task["adapter"] not in ("process", "duplex"):
+                raise ValueError("Adapter must be process or duplex.")
+            if task["adapter"] == "duplex" and harness not in {"claude", "astra", "astra-ultra"}:
+                raise ValueError("Duplex control requires a Claude-compatible harness.")
+            out["adapter"] = task["adapter"]
+        if "workspace" in task:
+            if task["workspace"] not in ("shared", "read-only", "worktree"):
+                raise ValueError("Workspace must be shared, read-only, or worktree.")
+            out["workspace"] = task["workspace"]
         if harness == "command":
             argv = task.get("argv")
             if "prompt" in task or "model" in task or "effort" in task:

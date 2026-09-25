@@ -1,53 +1,84 @@
-# Durable run control: Codex → Claude Code
+# Durable run control across harnesses
 
-Status: v0.1 implemented and installed in both harnesses. Offline tests, a
-command-only handoff check, and a live Codex → Astra workflow passed on 2026-09-25.
+Status: v0.3.0 implements public native event timelines and explicit Claude-
+compatible duplex control, alongside existing pause/stop/guidance/recovery.
 
-Carry explicit run state and bounded supervision across harnesses. Claude Code
-already has resumable sessions; this work adds a shared controller for a sequence
-of native CLI tasks, not a replacement session engine.
+## Implemented: durable attempts and public events
 
-## v0.1: explicit state and stop points
+Private atomic snapshots and a per-run controller lock prevent competing
+controllers. Each attempt retains process ownership, native session pointers,
+launch evidence, checkout metadata and observed outcomes. `status` explains
+blockers and explicit continuation actions; `status --metadata` omits goals,
+paths, summaries and notes for a smaller frontend interface.
 
-- Private atomic snapshots track goals, task attempts and observed results.
-  A per-run controller lock prevents two controllers from launching the same run.
-- Native session identifiers are retained when the harness emits them. Status
-  includes the pause/stop reason; exit 2 means the invocation did not finish the
-  run, including an intentional launch-limit pause.
-- `pause` requests a stop between tasks. `stop` terminates owned active process
-  groups and records cancellation; it must not stop an unrelated CLI session.
-- `steer` records guidance for the next agent task. It does not claim to inject
-  instructions into a currently running native conversation.
-- Wall-time and launch-count bounds apply to this controller. Recovery marks
-  abandoned attempts interrupted only after proving the controller lock is free.
-- Retry is explicit for failed, cancelled or interrupted tasks. Never repeat an
-  effect automatically merely because its completion record was lost in a crash.
+`timeline` includes live session, turn, tool and delegated-task metadata from
+Codex and Claude-compatible streams. It excludes output text, prompts, arguments,
+reasoning and raw logs. The journal caps retained native events at 2,000 and
+reports omissions. The view shows the latest 20 entries by default, up to 200.
+Recorded running state is not independent proof of process liveness.
 
-Acceptance: control survives a controller restart; pause launches no following
-task; stop leaves no owned child process; a second controller cannot steal a live
-run; a simulated crash records interrupted work without automatically retrying
-it. An ordinary success record remains an observed process outcome.
+Pause drains active tasks and stops new launches. Stop terminates this run's
+owned process groups; it does not undo effects or control unrelated sessions.
+`steer` queues guidance for the next agent task that starts, including under
+parallel scheduling. It never claims delivery to an already-running turn.
 
-## Implemented: clearer continuation decisions
+## Implemented: acknowledged native control
 
-- `status` shows bounded result summaries, attempt/native session identifiers,
-  dependency blockers and explicit next actions.
-- `timeline RUN [--limit N] [--json]` presents selected recorded event fields and
-  attempt metadata: the latest 20 entries by default, with a limit of 1–200.
-  It omits raw logs, note text and guidance text.
-- Retry, continuation of pending tasks, next-task guidance and native session
-  pointers retain separate meanings. Neither view executes any of them.
+Set `adapter: "duplex"` or `create --adapter duplex` for Claude, Astra or Astra
+Ultra. The runner verifies advertised input flags, then requires a correlated
+initialize response before sending the prompt. It preserves the native system
+prompt and authentication, injects no settings, and adds no bypass flags.
+Codex retains its single-input exec adapter and process-group stop control.
 
-Acceptance: the view explains why each task is pending/blocked/interrupted, shows
-which attempt produced each result, and never represents next-task guidance as
-in-flight steering. A user can locate the native session without exporting logs.
+`send RUN TASK TEXT --request-id ID` and `interrupt RUN TASK --request-id ID`
+address a particular initialized active attempt. Durable records distinguish
+queued, dispatching, sent, acknowledged, rejected, unacknowledged and not-sent
+states. Identical caller IDs are deduplicated; conflicting reuse fails. Echoed
+input UUIDs and interrupt responses prove receipt, never applied instructions
+or completed effects. Missing receipts are not automatically resent.
 
-## Next: native control adapters
+Native permission rules remain authoritative. Unresolved tool decisions receive
+deny with interruption and an explicit blocker; continue only through a deliberate
+native-session decision. Unknown hook/MCP callbacks fail rather than granting
+access. Workbench installs no replacement native hooks or permission policy.
 
-If a supported SDK exposes cancellation or in-flight steering, add a capability
-checked adapter while retaining the subprocess fallback. This integration uses
-documented native controls; inventing new product controls requires source/API
-changes and is outside a wrapper's guarantees.
+Input closure uses observed turn completion, tracked local agents/workflows,
+queued requests and a 0.5-second settling interval. Native input can coalesce and
+background continuations can race with this bounded drain heuristic; it is not
+a one-result-per-input guarantee. The runner still waits for process exit and
+terminal success, subject to its deadline.
+Result UUID receipts support coalesced input batches where emitted. Older
+producers have only a narrow single-input fallback; ambiguous overlapping inputs
+remain unverified and may wait for native exit or the invocation boundary.
+An explicit stop can end that wait. Using a separately selected compatible
+executable does not upgrade the user's default native installation.
 
-Acceptance: each adapter reports supported controls explicitly, confirms observed
-delivery where possible, and does not silently emulate stronger semantics.
+Acceptance evidence: protocol and fake-process tests cover incremental bounded
+frames, correlated acknowledgments, refusal before initial input, late interrupt
+receipts, lost-echo uncertainty, permission denial, unknown callbacks, task
+lifecycle tracking and privacy filters. Process success is still an outcome,
+not proof of correctness.
+
+## Implemented: optional native frontend
+
+The separate Claude mod renders `/workbench-status RUN` using metadata snapshots
+and selected events, with Refresh and Close. It executes only fixed read-only
+CLI calls and adds no task content to model context. Native host tests passed
+on Claude Code 2.1.282 with per-process function hooks enabled. Ordinary plugin
+installation does not enable the mod or replace the native runtime.
+`mod-check` verifies a selected runtime with temporary configuration and bounded
+native processes. Strict validation is separate from explicit `--test` host
+execution; `--enable-function-hooks` applies only to checking processes. Unknown
+output never establishes compatibility, and no model request is made by the check.
+
+## Recovery and next work
+
+Recovery takes the controller lock before marking stale attempts interrupted.
+It closes uncertain request queues without resend. Retry remains an explicit
+choice to repeat possibly executed work; succeeded tasks are retained.
+
+Next improvements need native support for a definitive run-boundary signal and
+an explicit interactive permission bridge. Any bridge must retain native policy,
+distinguish pending decisions from granted authority, and keep acknowledgment
+separate from execution. Resume/fork semantics and native histories remain
+separate from Workbench's task continuation and portable handoff.

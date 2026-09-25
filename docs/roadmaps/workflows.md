@@ -1,65 +1,69 @@
-# Workflow orchestration: Claude Code → Codex
+# Workflow orchestration across harnesses
 
-Status: v0.1 implemented and installed in both harnesses. Offline tests, a
-command-only handoff check, and a live Codex → Astra workflow passed on 2026-09-25.
+Status: v0.3.0 implements bounded parallel scheduling with declared checkout
+ownership and retained per-attempt Git worktrees. Serial execution remains the
+default.
 
-Carry Claude Code's explicit workflow organization into a portable local runner.
-Use both harnesses' existing tools, skills and agents; do not claim Codex lacks
-delegation or introduce another inference/authentication service.
+## Implemented: inspectable task graphs
 
-## v0.1: inspectable task graph
+Version 1 manifests declare a goal, task IDs, dependencies and explicit harnesses.
+Agent tasks use prompts and optional model/effort choices; commands use argv
+without a shell. `create --harness ... --prompt ...` saves a single task, while
+file/stdin manifests define graphs. Creation and import do not execute anything.
+Unique run prefixes and project-filtered listing avoid implicit latest-run
+selection. `plan` exposes definitions, notes and imported provenance.
 
-- A version 1 JSON manifest declares a goal, task IDs, dependencies and each
-  task's harness. Agent tasks use prompts; command tasks use explicit argv.
-- Validate dependencies and cycles before creating a run. Execute ready tasks
-  serially in the selected existing project; retain observed outcomes privately.
-- `plan RUN` exposes the manifest and recorded notes for review, with recognizable
-  credential-like strings redacted in the display and the saved plan unchanged.
-- Invoke installed Codex, Claude, Astra or Astra Ultra launchers with their native
-  authentication and permission behavior. Model/effort overrides are explicit
-  manifest choices, not inferred from task difficulty.
-- Reopening a run preserves succeeded tasks. Failed or interrupted work requires
-  an explicit retry; a process result is not a claim of review approval.
-- Bound elapsed time and launches. These are not token/spend limits.
+The runner validates dependencies/cycles, preserves succeeded tasks, and requires
+explicit retry of failed/cancelled/interrupted work. Success needs a successful
+native terminal event as well as process exit for agent tasks. It does not certify
+an answer. Elapsed-time and launch limits are not token or spend caps.
 
-Acceptance: a synthetic mixed-harness graph executes in dependency order; a
-failed dependency blocks descendants; invalid graphs launch nothing; a completed
-task does not repeat when the run resumes. Fake native error terminal events
-cannot be reported as successful just because the process exited zero.
+Agent prompts receive bounded predecessor summaries and recent historical notes.
+Imported claims remain unverified, stored notes remain intact, and credential-like
+notes are withheld. Native authentication, hooks and permission controls remain
+in force; no model/effort override is inferred from task difficulty.
 
-## Implemented: less setup for ordinary tasks
+## Implemented: bounded concurrency and checkout ownership
 
-- `create --harness HARNESS --prompt TEXT` saves one task directly. Prompt files
-  and stdin are supported; JSON manifests remain available for task graphs.
-- Creation defaults to the current project and still validates and saves an
-  unstarted run. Harness selection is explicit, and native model/effort defaults
-  remain in force unless overridden.
-- Unique run ID prefixes of at least eight hexadecimal characters work across
-  CLI commands; project-filtered listing helps locate the intended run. No
-  implicit latest-run selection.
-- The next agent receives bounded recorded notes as well as predecessor results.
-  Notes remain historical context; imported claims do not establish fresh success.
+`run --jobs N` accepts 1–16 workers. A successor starts only after every dependency
+succeeds. Ready tasks must also fit their declared checkout ownership:
 
-Acceptance: each input form produces a normal pending run, malformed or oversized
-input fails before creation, conflicting forms fail clearly, and ambiguous run
-prefixes perform no action.
+- `shared` is the default project checkout and serializes with its shared readers
+  and writers, regardless of graph independence.
+- `read-only` tasks may overlap other readers. This declaration is not a sandbox.
+- `worktree` tasks get independent detached Git worktrees per attempt and may
+  overlap either mode. Their source is committed HEAD; uncommitted/untracked
+  files are not copied. The project's repository-relative path is preserved.
 
-## Next: independent work in parallel
+Checkout leases coordinate controllers sharing a Workbench state root. They do
+not exclude editors or processes outside Workbench. A busy lease creates no
+attempt: the run drains active work, pauses with `workspace_busy`, and waits for
+an explicit later run. There is no automatic retry loop.
 
-Add a configurable concurrency cap and explicit per-task working directories or
-worktrees. Scheduling must account for tasks that edit the same project rather
-than infer independence from graph shape alone.
+A failure stops new launches and interrupts active peers. Stop/deadline/signal
+boundaries clean owned process groups. Pause and launch limits let already-started
+work finish. The controller joins all workers before releasing ownership.
+A graph join never merges worktrees or copies predecessor files: integration is
+an explicit task with its own verification.
 
-Acceptance: independent read-only tasks overlap, shared-write tasks remain
-serialized, cancellation owns only this run's processes, and a join observes
-every dependency's recorded outcome before launching its next task.
+`workspaces RUN` lists retained ownership and checkout metadata.
+`workspace-remove RUN TASK ATTEMPT` removes only a recorded owned tree after
+execution, while clean and still at its recorded base commit. Dirty work or new
+commits are preserved; there is no automatic cleanup or force removal.
 
-## Later: reusable workflow packs
+Acceptance evidence: real synthetic commands and temporary Git repositories
+verify overlap and worker bounds, serial shared writers, dependency joins,
+separate outputs, retained dirty work, owned clean removal, peer cancellation,
+multiple descendant groups, signal/deadline cleanup, lease contention and
+controller-error cleanup. Crash recovery never infers permission to repeat work.
 
-Package named manifest templates and review checkpoints in local skills/plugins.
-Allow users to inspect the expanded graph before execution. A native workflow UI
-or deep in-flight agent integration would be a product/source change, not a
-capability supplied by the local plugin.
+## Next: explicit integration and reusable packs
 
-Acceptance: templates expand deterministically, preserve explicit model choices,
-and can be exported as ordinary handoff manifests with no hidden execution code.
+Add inspectable artifact-transfer/integration steps that state which checkout and
+commit they consume, rather than treating dependency completion as a merge.
+Named manifest templates can package repeatable review/verification work while
+preserving an ordinary expanded graph, user model choices and execution bounds.
+
+Acceptance: expanded graphs are deterministic and reviewable; transferred
+artifacts have explicit provenance; applying or retrying changes remains an
+explicit effect. No hidden template execution or automatic merge is introduced.

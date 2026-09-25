@@ -13,13 +13,14 @@ import math
 import os
 from pathlib import Path
 import re
+import selectors
 import signal
 import subprocess
 import threading
 import time
 import uuid
 
-from .store import add_event, now
+from .store import add_event, now, write_private_json
 
 
 POLL_SECONDS = 0.05
@@ -438,7 +439,146 @@ def _begin_attempt(store, run_id, task_id):
     return attempt_id, directory, captured
 
 
+def _boundary(store, run_id, deadline, task_deadline, interrupted):
+    control = store.read(run_id)["control"]
+    if interrupted["signal"] is not None:
+        return "interrupted", "signal"
+    if control.get("stop_requested"):
+        return "cancelled", "stop_requested"
+    if interrupted.get("cancel"):
+        return "interrupted", interrupted["cancel"]
+    if time.monotonic() >= deadline:
+        return "interrupted", "invocation_timeout"
+    if time.monotonic() >= task_deadline:
+        return "failed", "task_timeout"
+    return None, None
+
+
+def _duplex_pump(store, run_id, task, attempt_id, process, prompt, stdout, journal, deadline, task_deadline, interrupted):
+    from .native import NativeSession, NativeProtocolError
+    from .bridge import claim_requests
+    os.set_blocking(process.stdin.fileno(), False)
+    os.set_blocking(process.stdout.fileno(), False)
+    def send(payload):
+        until = min(deadline, task_deadline, time.monotonic() + 5)
+        view = memoryview(payload)
+        while view:
+            if time.monotonic() >= until or interrupted["signal"] is not None or interrupted.get("cancel"):
+                raise TimeoutError("Native input write did not complete")
+            try:
+                count = os.write(process.stdin.fileno(), view)
+                view = view[count:]
+            except BlockingIOError:
+                time.sleep(POLL_SECONDS)
+    session = NativeSession(send, journal.emit)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    initial_sent = False
+    initialization_deadline = min(deadline, task_deadline, time.monotonic() + 20)
+    settle_since = None
+    input_closed = False
+    interrupted_turn = False
+    drain_evidence = None
+    try:
+        session.initialize(attempt_id + "-initialize")
+        while process.poll() is None or selector.get_map():
+            reason, failure = _boundary(store, run_id, deadline, task_deadline, interrupted)
+            if reason:
+                return reason, failure
+            for key, _ in selector.select(POLL_SECONDS):
+                try:
+                    chunk = os.read(key.fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                stdout.write(chunk)
+                stdout.flush()
+                session.feed(chunk)
+                settle_since = None
+            if session.protocol_error:
+                return "failed", session.protocol_error
+            reason, failure = _boundary(store, run_id, deadline, task_deadline, interrupted)
+            if reason:
+                return reason, failure
+            if not session.initialized and time.monotonic() >= initialization_deadline:
+                session.expire(attempt_id + "-initialize")
+                return "failed", "native_initialization_timeout"
+            if session.initialized and not initial_sent:
+                session.send_user(prompt, attempt_id + "-initial")
+                initial_sent = True
+            journal.flush()
+            interrupted_turn = any(r["action"] == "interrupt" and r["status"] == "acknowledged" for r in session.requests.values())
+            if session.input_drain_evidence != drain_evidence:
+                drain_evidence = session.input_drain_evidence
+                store.update(run_id, lambda state: _task_by_id(state, task["id"])["attempts"][-1].update(
+                    input_drain_evidence=drain_evidence, input_drained=session.input_drained))
+            if session.initialized and not input_closed:
+                for request in claim_requests(store, run_id, attempt_id):
+                    if request["action"] == "input":
+                        session.send_user(request["text"], request["id"])
+                    else:
+                        session.interrupt(request["id"])
+                    settle_since = None
+                journal.flush()
+                settled = initial_sent and session.input_drained and not session.active_tasks
+                if settled:
+                    settle_since = settle_since or time.monotonic()
+                    if time.monotonic() - settle_since >= 0.5:
+                        # This is an input drain heuristic, not proof background
+                        # effects have finished. The native process must still
+                        # terminate and produce a successful terminal result.
+                        def close_input(state):
+                            queued = any(r["attempt_id"] == attempt_id and r["status"] == "queued"
+                                         for r in state["control"].get("native_requests", []))
+                            if queued:
+                                raise _ControlBoundary()
+                            _task_by_id(state, task["id"])["attempts"][-1]["input_closed"] = True
+                            add_event(state, "native_input_closed", task_id=task["id"], attempt_id=attempt_id, reason="settled_turns_heuristic")
+                        try:
+                            store.update(run_id, close_input)
+                        except _ControlBoundary:
+                            settle_since = None
+                        else:
+                            process.stdin.close()
+                            input_closed = True
+                else:
+                    settle_since = None
+            if process.poll() is not None and not selector.get_map():
+                break
+        if interrupted_turn:
+            return "interrupted", "native_turn_interrupt_acknowledged"
+        if session.terminal_error:
+            return "failed", "native_result"
+        if not session.input_drained:
+            return "failed", "native_input_completion_unverified"
+        if session.active_tasks:
+            return "failed", "native_activity_completion_unverified"
+        return None, None
+    except (NativeProtocolError, OSError) as exc:
+        return "failed", session.protocol_error or "native_transport_error"
+    finally:
+        session.finish()
+        journal.flush()
+        selector.close()
+        if not process.stdin.closed:
+            process.stdin.close()
+        process.stdout.close()
+
+
 def _execute(store, run_id, task_id, deadline, interrupted):
+    from .workspaces import lease
+    state = store.read(run_id)
+    task = _task_by_id(state, task_id)
+    with lease(store, state["project"], task.get("workspace", "shared")):
+        return _execute_owned(store, run_id, task_id, deadline, interrupted)
+
+
+def _execute_owned(store, run_id, task_id, deadline, interrupted):
+    from .capabilities import inspect_launch
+    from .workspaces import prepare
+    from .bridge import PublicJournal, EventTail, close_requests
     attempt_id, directory, captured = _begin_attempt(store, run_id, task_id)
     task = captured["task"]
     # Astra owns a separately-sessioned inference proxy and performs its own
@@ -448,40 +588,81 @@ def _execute(store, run_id, task_id, deadline, interrupted):
     reason = None
     failure_kind = None
     started = time.monotonic()
+    journal = PublicJournal(store, run_id, task_id, attempt_id)
+    workspace = None
     try:
         with _private_file(directory / "stdin.txt") as stream:
             stream.write(captured["prompt"].encode())
         with (directory / "stdin.txt").open("rb") as stdin, _private_file(directory / "stdout.log") as stdout, _private_file(directory / "stderr.log") as stderr:
             try:
-                process = subprocess.Popen(_argv(task), cwd=store.read(run_id)["project"], stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=True, close_fds=True)
+                project = store.read(run_id)["project"]
+                environment = dict(os.environ)
+                workspace = prepare(store, run_id, task, attempt_id, project)
+                store.update(run_id, lambda state: _task_by_id(state, task_id)["attempts"][-1].update(workspace=workspace))
+                profile = inspect_launch(task, Path(workspace["path"]), env=environment)
+                write_private_json(directory / "launch.json", profile)
+                summary_keys = ("harness", "executable", "resolved_executable", "display_executable", "status", "version", "native", "capabilities", "warnings")
+                def profiled(state):
+                    attempt = _task_by_id(state, task_id)["attempts"][-1]
+                    attempt["launch"] = {key: profile[key] for key in summary_keys if key in profile}
+                    attempt["launch_profile"] = str((directory / "launch.json").relative_to(store.directory(run_id)))
+                store.update(run_id, profiled)
+                if not profile.get("executable"):
+                    raise FileNotFoundError("No such file: selected executable is unavailable")
+                duplex = task.get("adapter") == "duplex"
+                args = _argv(task)
+                args[0] = profile["executable"]
+                if duplex:
+                    from .native import duplex_arguments
+                    needed = {"--input-format", "--output-format", "--replay-user-messages"}
+                    if not needed <= set(profile.get("help", {}).get("flags", [])):
+                        raise ValueError("Selected native CLI does not advertise the required duplex input flags")
+                    args += duplex_arguments()
+                    environment["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] = "1"
+                task_deadline = started + float(task.get("timeout_seconds") or math.inf)
+                reason, failure_kind = _boundary(store, run_id, deadline, task_deadline, interrupted)
+                if reason:
+                    raise _ControlBoundary()
+                process = subprocess.Popen(args, cwd=workspace["path"], env=environment,
+                                           stdin=subprocess.PIPE if duplex else stdin,
+                                           stdout=subprocess.PIPE if duplex else stdout, stderr=stderr,
+                                           start_new_session=True, close_fds=True)
                 identity = _process_identity(process.pid)
                 def spawned(state):
                     attempt = _task_by_id(state, task_id)["attempts"][-1]
                     attempt.update(pid=process.pid, process_group=process.pid, process_identity=identity)
                 store.update(run_id, spawned)
-                task_deadline = started + float(task.get("timeout_seconds") or math.inf)
-                while process.poll() is None:
-                    control = store.read(run_id)["control"]
-                    if interrupted["signal"] is not None:
-                        reason, failure_kind = "interrupted", "signal"
-                    elif control.get("stop_requested"):
-                        reason, failure_kind = "cancelled", "stop_requested"
-                    elif time.monotonic() >= deadline:
-                        reason, failure_kind = "interrupted", "invocation_timeout"
-                    elif time.monotonic() >= task_deadline:
-                        reason, failure_kind = "failed", "task_timeout"
-                    if reason:
+                if duplex:
+                    reason, failure_kind = _duplex_pump(store, run_id, task, attempt_id, process,
+                        captured["prompt"], stdout, journal, deadline, task_deadline, interrupted)
+                    if reason and process.poll() is None:
                         _terminate_group(process.pid, process, termination_grace)
-                        break
-                    time.sleep(POLL_SECONDS)
+                else:
+                    tail = EventTail(directory / "stdout.log", task["harness"], journal.emit) if task["harness"] != "command" else None
+                    while process.poll() is None:
+                        if tail:
+                            tail.poll()
+                            journal.flush()
+                        reason, failure_kind = _boundary(store, run_id, deadline, task_deadline, interrupted)
+                        if reason:
+                            _terminate_group(process.pid, process, termination_grace)
+                            break
+                        time.sleep(POLL_SECONDS)
+                    if tail:
+                        while tail.poll(final=True):
+                            pass
                 # A foreground task may leave background descendants. Keep the
                 # workflow's ownership boundary by cleaning the remaining group.
                 if _group_exists(process.pid):
                     _terminate_group(process.pid, process, termination_grace)
-            except OSError as exc:
+            except _ControlBoundary:
+                pass
+            except (OSError, ValueError) as exc:
                 if reason is None:
                     reason, failure_kind = ("failed", "launch_error") if process is None else ("interrupted", "process_control_error")
                 stderr.write((redact_summary(exc) + "\n").encode())
+        journal.flush()
+        close_requests(store, run_id, attempt_id)
         parsed = _extract_result(task["harness"], directory / "stdout.log")
         exit_code = process.returncode if process is not None else None
         if reason is None:
@@ -508,6 +689,8 @@ def _execute(store, run_id, task_id, deadline, interrupted):
             "failure_kind": failure_kind, "native_success": parsed["native_success"],
             "native_session_id": parsed["native_session_id"], "attempt_id": attempt_id,
             "warnings": parsed["warnings"], "warning_count": parsed["warning_count"], "stderr_diagnostic": stderr_diagnostic}
+        if workspace:
+            result["workspace"] = workspace
         def finish(state):
             current = _task_by_id(state, task_id)
             current["status"] = reason
@@ -521,6 +704,8 @@ def _execute(store, run_id, task_id, deadline, interrupted):
     finally:
         if process is not None and _group_exists(process.pid):
             _terminate_group(process.pid, process, termination_grace)
+        journal.flush()
+        close_requests(store, run_id, attempt_id)
 
 
 def _set_run_status(store, run_id, status, reason=None):
@@ -531,11 +716,13 @@ def _set_run_status(store, run_id, status, reason=None):
     return store.update(run_id, change)
 
 
-def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20):
+def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1):
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be a positive finite number")
     if isinstance(max_launches, bool) or not isinstance(max_launches, int) or max_launches < 1:
         raise ValueError("max_launches must be a positive integer")
+    if type(jobs) is not int or not 1 <= jobs <= 16:
+        raise ValueError("jobs must be an integer between 1 and 16")
     with _controller_lock(store, run_id), _signal_state() as interrupted:
         state = store.read(run_id)
         if state.get("controller") or any(task["status"] == "running" for task in state["tasks"]) or state["status"] == "running":
@@ -552,38 +739,19 @@ def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20):
             state["status"] = "running"
             state["control"]["pause_requested"] = False
             state["control"]["stop_requested"] = False
-            add_event(state, "run_started", timeout_seconds=timeout_seconds, max_launches=max_launches)
+            add_event(state, "run_started", timeout_seconds=timeout_seconds, max_launches=max_launches, jobs=jobs)
         store.update(run_id, acquire)
         try:
-            while True:
-                state = store.read(run_id)
-                control = state["control"]
-                if interrupted["signal"] is not None:
-                    return _set_run_status(store, run_id, "interrupted", "signal")
-                if control.get("stop_requested"):
-                    return _set_run_status(store, run_id, "stopped", "stop_requested")
-                if all(task["status"] == "succeeded" for task in state["tasks"]):
-                    return _set_run_status(store, run_id, "succeeded")
-                if control.get("pause_requested"):
-                    return _set_run_status(store, run_id, "paused", "pause_requested")
-                if time.monotonic() >= deadline or launches >= max_launches:
-                    return _set_run_status(store, run_id, "paused", "invocation_timeout" if time.monotonic() >= deadline else "launch_limit")
-                succeeded = {task["id"] for task in state["tasks"] if task["status"] == "succeeded"}
-                ready = next((task for task in state["tasks"] if task["status"] == "pending" and set(task.get("depends_on", [])) <= succeeded), None)
-                if ready is None:
-                    return _set_run_status(store, run_id, "failed", "no_ready_tasks")
-                try:
-                    outcome = _execute(store, run_id, ready["id"], deadline, interrupted)
-                except _ControlBoundary:
-                    continue
-                launches += 1
-                if outcome != "succeeded":
-                    return _set_run_status(store, run_id, {"cancelled": "stopped", "interrupted": "interrupted"}.get(outcome, "failed"), outcome)
+            from .scheduler import schedule
+            status, reason = schedule(store, run_id, deadline, interrupted, max_launches, jobs)
+            return _set_run_status(store, run_id, status, reason)
         except BaseException:
             def crashed(state):
                 state["status"] = "interrupted"
                 for task in state["tasks"]:
                     if task["status"] == "running":
+                        from .bridge import mark_closed
+                        mark_closed(state, task["attempts"][-1]["id"])
                         task["status"] = "interrupted"
                         task["attempts"][-1].update(status="interrupted", finished_at=now(), failure_kind="controller_error")
                         task["result"] = {"status": "interrupted", "summary": "Controller interrupted; effects may already have occurred", "failure_kind": "controller_error"}
@@ -674,6 +842,9 @@ def recover_run(store, run_id):
                         attempt = task["attempts"][-1]
                         attempt.update(status="interrupted", finished_at=now(), failure_kind="stale_controller", unresolved_process_group=attempt["id"] in unresolved)
                     task["result"] = {"status": "interrupted", "summary": "Recovered stale execution; effects may already have occurred. Explicit retry required.", "failure_kind": "stale_controller"}
+                    if task.get("attempts"):
+                        from .bridge import mark_closed
+                        mark_closed(current, task["attempts"][-1]["id"])
             if stale:
                 current["status"] = "interrupted"
                 current["controller"] = None

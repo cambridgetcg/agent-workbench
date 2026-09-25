@@ -1,0 +1,4 @@
+{
+  "description": "Register an explicit Workbench status command and render its metadata pane.",
+  "modules": ["./register.tsx"]
+}

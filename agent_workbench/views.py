@@ -12,11 +12,17 @@ _ATTEMPT_FIELDS = (
     "id", "status", "started_at", "finished_at", "elapsed_seconds", "exit_code",
     "failure_kind", "native_success", "native_session_id", "unresolved_process_group",
     "process_group", "process_identity",
+    "duplex_initialized", "input_closed",
+    "input_drained", "input_drain_evidence",
 )
 _EVENT_FIELDS = (
     "at", "kind", "task_id", "attempt_id", "status", "reason", "failure_kind",
     "note_kind", "applies_to", "timeout_seconds", "max_launches", "previous_attempts",
     "unresolved_process_groups", "source_run_id",
+    "session_id", "native_task_id", "tool_use_id", "parent_tool_use_id", "item_id", "agent_id",
+    "tool", "role", "terminal_reason", "request_id", "action", "code", "decision_type", "subtype",
+    "input_tokens", "output_tokens", "total_cost_usd", "num_turns", "duration_ms", "duration_api_ms", "task_type",
+    "jobs",
 )
 
 
@@ -57,6 +63,13 @@ def status_details(state: dict) -> dict:
         attempts = task.get("attempts", [])
         unresolved = [attempt for attempt in attempts if attempt.get("unresolved_process_group")]
         latest = _selected(attempts[-1], _ATTEMPT_FIELDS) if attempts else None
+        if latest is not None:
+            attempt = attempts[-1]
+            launch = attempt.get("launch", {})
+            latest["launch"] = {**_selected(launch, ("harness", "display_executable", "status")),
+                                "version": _selected(launch.get("version", {}), ("status", "version", "subject"))}
+            latest["workspace"] = _selected(attempt.get("workspace", {}), ("mode", "path", "base_commit", "retained", "sandboxed", "source_dirty"))
+            latest["control_receipts"] = [_selected(r, ("at", "request_id", "action", "status")) for r in attempt.get("control_receipts", [])[-64:]]
         result = task.get("result") or {}
         if latest is not None and result.get("attempt_id") == latest.get("id"):
             if not latest.get("native_session_id") and result.get("native_session_id"):
@@ -71,7 +84,7 @@ def status_details(state: dict) -> dict:
             elif run_status in {"paused", "stopped"} and not controller:
                 reason = "Ready; the run is " + run_status + ". An explicit run continues pending work."
             elif controller or active:
-                reason = "Ready; waiting for the serial controller to launch this task."
+                reason = "Ready; waiting for controller capacity and checkout ownership."
             else:
                 reason = "Ready for an explicit run."
         elif status in _RETRYABLE:
@@ -107,6 +120,14 @@ def status_details(state: dict) -> dict:
                 action("pause", "Request a pause between tasks."),
                 action("stop", "Request termination of the controller's owned active subprocess group."),
             ]
+            for task in tasks:
+                if task["status"] == "running" and task.get("adapter") == "duplex" and task.get("attempts"):
+                    attempt = task["attempts"][-1]
+                    if attempt.get("duplex_initialized") and not attempt.get("input_closed"):
+                        actions.extend([
+                            action("send", "Queue input for this active native session; inspect its receipt before assuming delivery.", task["id"]),
+                            action("interrupt", "Request native turn interruption; acknowledgment is not proof effects have stopped.", task["id"]),
+                        ])
     elif active:
         actions = [action("recover", "Inspect work first. Recovery checks that the controller lock is free and records interrupted attempts without rerunning them.")]
     elif unresolved_count and retryable:
@@ -139,6 +160,10 @@ def timeline_view(state: dict, limit: int = 20) -> dict:
     represented = set()
     for event in state.get("events", []):
         entry = _selected(event, _EVENT_FIELDS)
+        if isinstance(event.get("usage"), dict):
+            entry["usage"] = {key: value for key, value in event["usage"].items()
+                              if key in {"input_tokens", "output_tokens", "cached_input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "total_tokens"}
+                              and type(value) in {int, float} and math.isfinite(value) and 0 <= value <= 1e15}
         key = (event.get("task_id"), event.get("attempt_id"))
         attempt = attempts.get(key)
         if attempt is not None and event.get("kind") in {"task_started", "task_finished"}:
@@ -158,6 +183,16 @@ def timeline_view(state: dict, limit: int = 20) -> dict:
     return {
         **_selected(state, ("id", "status")),
         "entries": entries[-limit:],
-        "total_entries": len(entries),
-        "truncated": len(entries) > limit,
+        "total_entries": len(entries) + state.get("native_events_dropped", 0),
+        "truncated": len(entries) > limit or bool(state.get("native_events_dropped")),
+        "dropped_native_events": state.get("native_events_dropped", 0),
     }
+
+
+def metadata_view(state):
+    """Minimal plugin/UI contract: no goals, summaries, notes, paths or logs."""
+    return {**_selected(state, ("id", "status", "revision")),
+            "tasks": [{**_selected(task, ("id", "harness", "status", "adapter", "workspace")),
+                       "attempts": len(task.get("attempts", []))} for task in state.get("tasks", [])],
+            "queued_guidance_count": len(state.get("control", {}).get("guidance", [])),
+            "native_request_count": len(state.get("control", {}).get("native_requests", []))}

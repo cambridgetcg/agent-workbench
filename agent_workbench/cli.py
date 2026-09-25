@@ -35,7 +35,7 @@ def load_manifest(path: Path) -> dict:
 
 
 def creation_manifest(args) -> dict:
-    simple_options = (args.harness, args.prompt, args.prompt_file, args.name, args.goal, args.model, args.effort)
+    simple_options = (args.harness, args.prompt, args.prompt_file, args.name, args.goal, args.model, args.effort, args.adapter, args.workspace)
     if args.manifest is not None:
         if any(value is not None for value in simple_options):
             raise ValueError("Use a manifest or prompt options, not both.")
@@ -44,7 +44,7 @@ def creation_manifest(args) -> dict:
         raise ValueError("Provide a manifest (or - for stdin), or --harness with --prompt/--prompt-file.")
     prompt = args.prompt if args.prompt is not None else read_input(args.prompt_file, limit=400_000)
     task = {"id": "work", "harness": args.harness, "prompt": prompt}
-    for field in ("model", "effort"):
+    for field in ("model", "effort", "adapter", "workspace"):
         if getattr(args, field) is not None:
             task[field] = getattr(args, field)
     name = args.name if args.name is not None else prompt.strip().split("\n")[0][:160]
@@ -73,7 +73,9 @@ def status_view(state: dict) -> dict:
         "revision": state["revision"], "updated_at": state["updated_at"],
         "control": {"stop_requested": state["control"].get("stop_requested", False),
                     "pause_requested": state["control"].get("pause_requested", False),
-                    "queued_guidance_count": len(state["control"].get("guidance", []))},
+                    "queued_guidance_count": len(state["control"].get("guidance", [])),
+                    "native_requests": [{key: value for key, value in request.items() if key != "text"}
+                                        for request in state["control"].get("native_requests", [])]},
         "tasks": [{"id": t["id"], "harness": t["harness"], "status": t["status"],
                    "depends_on": t["depends_on"], "attempts": len(t["attempts"]),
                    "result": t.get("result"), **details["tasks"][t["id"]]} for t in state["tasks"]],
@@ -144,6 +146,10 @@ def parser() -> argparse.ArgumentParser:
     d.add_argument("--project", type=Path, default=Path.cwd())
     d.add_argument("--probe", action="store_true", help="Probe existing loopback gateways without inference")
     d.add_argument("--json", action="store_true")
+    explain = sub.add_parser("explain", help="Explain partial configuration, instructions and launch capabilities")
+    explain.add_argument("--project", type=Path, default=Path.cwd())
+    explain.add_argument("--harness", choices=sorted(HARNESSES - {"command"}))
+    explain.add_argument("--json", action="store_true")
     c = sub.add_parser("create", help="Save an unstarted workflow from a manifest or an agent prompt")
     c.add_argument("manifest", type=Path, nargs="?", help="JSON file, or - to read JSON from stdin")
     c.add_argument("--project", type=Path, default=Path.cwd(), help="Project directory (default: current directory)")
@@ -155,12 +161,32 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--goal", help="Workflow goal (default: prompt, or run name for prompts over 20,000 characters)")
     c.add_argument("--model", help="Explicit native model override")
     c.add_argument("--effort", choices=sorted(EFFORTS), help="Explicit native effort override")
+    c.add_argument("--adapter", choices=["process", "duplex"], help="Use explicit native duplex controls where supported")
+    c.add_argument("--workspace", choices=["shared", "read-only", "worktree"], help="Checkout ownership (read-only is a task declaration, not a sandbox)")
     ls = sub.add_parser("list", help="List saved local runs")
     ls.add_argument("--json", action="store_true")
     ls.add_argument("--project", type=Path, help="Only show runs for this project")
     s = sub.add_parser("status", help="Show tasks, attempts and run state")
     s.add_argument("run_id")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--metadata", action="store_true", help="Omit goal, prompts, summaries and project paths")
+    launch = sub.add_parser("launch", help="Inspect a recorded attempt's launch evidence")
+    launch.add_argument("run_id")
+    launch.add_argument("task_id")
+    launch.add_argument("--attempt", help="Attempt ID (default: latest for this task)")
+    workspaces = sub.add_parser("workspaces", help="List retained per-attempt checkout ownership")
+    workspaces.add_argument("run_id")
+    cleanup = sub.add_parser("workspace-remove", help="Explicitly remove an unchanged Workbench-owned worktree")
+    cleanup.add_argument("run_id")
+    cleanup.add_argument("task_id")
+    cleanup.add_argument("attempt_id")
+    for action in ("send", "interrupt"):
+        command = sub.add_parser(action, help="Address an active native duplex task; receipts do not imply applied effects")
+        command.add_argument("run_id")
+        command.add_argument("task_id")
+        if action == "send":
+            command.add_argument("text")
+        command.add_argument("--request-id", help="Caller ID for deduplication; repeated IDs are never resent")
     plan = sub.add_parser("plan", help="Inspect the saved task definitions, notes and imported provenance")
     plan.add_argument("run_id")
     timeline = sub.add_parser("timeline", help="Show recent run events and attempt outcomes without raw logs")
@@ -171,6 +197,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("run_id")
     run.add_argument("--timeout", type=float, default=1800, help="Overall wall-time limit in seconds")
     run.add_argument("--max-launches", type=int, default=20, help="Maximum task subprocess launches in this invocation")
+    run.add_argument("--jobs", type=int, default=1, help="Concurrent tasks, 1–16; shared writers still serialize")
     for action, help_text in [("pause", "Pause between tasks"), ("stop", "Stop the owned active task and its ordinary descendants"), ("recover", "Mark a stale controller interrupted without rerunning work")]:
         sub.add_parser(action, help=help_text).add_argument("run_id")
     steer = sub.add_parser("steer", help="Queue guidance for the next agent task, not the active turn")
@@ -189,6 +216,30 @@ def parser() -> argparse.ArgumentParser:
     im = sub.add_parser("import", help="Import history as a new unstarted run")
     im.add_argument("source", type=Path)
     im.add_argument("--project", type=Path, required=True)
+    ep = sub.add_parser("eval-plan", help="Inspect a bounded, local-only plugin baseline comparison without inference")
+    ep.add_argument("plugin", type=Path)
+    ep.add_argument("--executable", default="claude")
+    ep.add_argument("--runs", type=int, default=3)
+    ep.add_argument("--case")
+    ep.add_argument("--max-cases", type=int, default=20)
+    ep.add_argument("--timeout", type=int, default=900)
+    ep.add_argument("--max-cost-usd", type=float, default=5)
+    ep.add_argument("--model")
+    ep.add_argument("--judge-model")
+    ep.add_argument("--allow-tool", action="append", default=[])
+    ep.add_argument("--trust-plugin", action="store_true", help="Explicit native trust of the selected evaluation directory")
+    ep.add_argument("--output", type=Path, help="Save the plan privately; refuses an existing file")
+    er = sub.add_parser("eval-run", help="Execute a saved plugin evaluation plan using the native evaluator")
+    er.add_argument("plan", type=Path)
+    report = sub.add_parser("eval-report", help="Summarize measured native evaluation outcomes without traces")
+    report.add_argument("report", type=Path)
+    inventory = sub.add_parser("plugin-cost", help="Inventory plugin context bytes and explicitly estimated tokens")
+    inventory.add_argument("plugin", type=Path)
+    mod = sub.add_parser("mod-check", help="Validate an optional mod against a selected native runtime without model calls")
+    mod.add_argument("plugin", type=Path)
+    mod.add_argument("--executable", default="claude")
+    mod.add_argument("--enable-function-hooks", action="store_true", help="Opt in for this isolated checking process only")
+    mod.add_argument("--test", action="store_true", help="Also run the mod's native host tests")
     return p
 
 
@@ -200,6 +251,36 @@ def main(argv=None) -> int:
             report = diagnose(project=args.project, probe=args.probe)
             print(json.dumps(report, indent=2) if args.json else format_report(report))
             return 0
+        if args.command == "explain":
+            from .capabilities import explain_configuration, inspect_launch
+            report = inspect_launch({"harness": args.harness}, args.project) if args.harness else explain_configuration(args.project)
+            # JSON is also the readable default: evidence and limitations stay
+            # adjacent to each value, without flattening uncertain provenance.
+            print(json.dumps(redacted_view(report), indent=2))
+            return 0
+        if args.command == "mod-check":
+            from .mods import check_mod
+            report = check_mod(args.plugin, executable=args.executable,
+                               enable_function_hooks=args.enable_function_hooks, run_tests=args.test)
+            print(json.dumps(redacted_view(report), indent=2))
+            return 0 if report.get("ok") else 1
+        if args.command in {"eval-plan", "eval-run", "eval-report", "plugin-cost"}:
+            from .evaluation import evaluation_plan, run_evaluation, evaluation_report, plugin_inventory
+            if args.command == "eval-plan":
+                report = evaluation_plan(args.plugin, executable=args.executable, runs=args.runs, case=args.case,
+                    max_cases=args.max_cases, timeout_seconds=args.timeout, max_cost_usd=args.max_cost_usd,
+                    model=args.model, judge_model=args.judge_model, allow_tools=args.allow_tool, trust_plugin=args.trust_plugin)
+                if args.output:
+                    from .handoff import _write_new
+                    _write_new(args.output, (json.dumps(report, indent=2) + "\n").encode())
+            elif args.command == "eval-run":
+                report = run_evaluation(load_manifest(args.plan), state_root=Store(args.state_dir).root)
+            elif args.command == "eval-report":
+                report = evaluation_report(args.report)
+            else:
+                report = plugin_inventory(args.plugin)
+            print(json.dumps(redacted_view(report), indent=2))
+            return 1 if args.command == "eval-run" and (report.get("execution") != "completed" or report.get("partial")) else 0
         store = Store(args.state_dir)
         if hasattr(args, "run_id"):
             args.run_id = store.resolve_run_id(args.run_id)
@@ -219,7 +300,34 @@ def main(argv=None) -> int:
                 if not states:
                     print("No saved runs.")
         elif args.command == "status":
-            print_status(store.read(args.run_id), args.json)
+            state = store.read(args.run_id)
+            if args.metadata:
+                from .views import metadata_view
+                print(json.dumps(metadata_view(state), indent=2))
+            else:
+                print_status(state, args.json)
+        elif args.command == "launch":
+            state = store.read(args.run_id)
+            task = next((t for t in state["tasks"] if t["id"] == args.task_id), None)
+            attempts = (task or {}).get("attempts", [])
+            attempt = next((a for a in attempts if a["id"] == args.attempt), None) if args.attempt else (attempts[-1] if attempts else None)
+            if not attempt or not attempt.get("launch_profile"):
+                raise ValueError("No recorded launch profile for this attempt")
+            path = store.directory(args.run_id) / attempt["launch_profile"]
+            if not path.resolve().is_relative_to(store.directory(args.run_id).resolve()) or path.is_symlink() or not path.is_file():
+                raise ValueError("Invalid launch profile path")
+            print(json.dumps(redacted_view(load_manifest(path)), indent=2))
+        elif args.command == "workspaces":
+            from .workspaces import workspace_view
+            print(json.dumps(redacted_view(workspace_view(store.read(args.run_id))), indent=2))
+        elif args.command == "workspace-remove":
+            from .workspaces import remove_clean
+            print_status(remove_clean(store, args.run_id, args.task_id, args.attempt_id))
+        elif args.command in {"send", "interrupt"}:
+            from .bridge import request_native
+            report = request_native(store, args.run_id, args.task_id, "input" if args.command == "send" else "interrupt",
+                                    getattr(args, "text", None), args.request_id)
+            print(json.dumps(report, indent=2))
         elif args.command == "plan":
             print(json.dumps(plan_view(store.read(args.run_id)), indent=2))
         elif args.command == "timeline":
@@ -227,7 +335,7 @@ def main(argv=None) -> int:
             print_timeline(timeline_view(store.read(args.run_id), limit=args.limit), args.json)
         elif args.command == "run":
             from .runner import run_workflow
-            state = run_workflow(store, args.run_id, timeout_seconds=args.timeout, max_launches=args.max_launches)
+            state = run_workflow(store, args.run_id, timeout_seconds=args.timeout, max_launches=args.max_launches, jobs=args.jobs)
             print_status(state)
             return 0 if state["status"] == "succeeded" else 1 if state["status"] == "failed" else 2
         elif args.command in {"pause", "stop", "steer"}:

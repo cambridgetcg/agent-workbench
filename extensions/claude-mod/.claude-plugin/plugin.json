@@ -1,0 +1,6 @@
+{
+  "name": "agent-workbench-status",
+  "version": "0.1.0",
+  "description": "Optional read-only Workbench status command and pane for Claude Code function hooks.",
+  "author": {"name": "Agent Workbench contributors"}
+}

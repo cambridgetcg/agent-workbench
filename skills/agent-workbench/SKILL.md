@@ -1,16 +1,20 @@
 ---
 name: agent-workbench
-description: Diagnose local Codex, Claude Code or Astra adapter configuration; save and run dependency-based workflows; control managed runs; or transfer an explicit work handoff between harnesses. Use for these operations, not ordinary coding tasks.
+description: Diagnose Codex, Claude Code or Astra configuration; run and control saved workflows; compare local plugin evaluations; or transfer explicit work handoffs. Use for these operations, not ordinary coding tasks.
 ---
 
 Use the shared `agent-workbench` CLI. If it is not on PATH, execute the bundled
 [script](../../scripts/agent-workbench) with Python 3.11+ using its resolved path.
 For command syntax and a workflow example, read [the guide](../../README.md).
 
-- Start connection investigations with `doctor --json`. It reports selected local
-  settings and credential freshness, not full native effective configuration.
+- Start connection investigations with `doctor --json`; use `explain` for partial
+  settings provenance, instruction-file presence and plugin version drift, or
+  `explain --harness HARNESS` for executable/version/help evidence. These are not
+  full native effective configuration or proof that instructions were loaded.
   `--probe` checks only existing loopback gateways; it does not call a model.
   Never read raw auth files or request logs merely to elaborate a doctor report.
+  Each attempt records launch evidence; inspect it with `launch RUN TASK` when
+  PATH selection, native version or wrapper behavior matters.
 - For one agent task, use `create --harness HARNESS --prompt TEXT` (or
   `--prompt-file FILE`, with `-` for stdin). For dependencies, use `create FILE`
   or pipe JSON to `create -`. Project defaults to the current directory;
@@ -21,12 +25,30 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   Use `plan RUN_ID` to inspect task definitions, notes and imported provenance.
   Run references accept unique prefixes of at least eight characters;
   `list --project PATH` finds runs for a project.
-- V1 runs tasks serially. Time and launch limits bound one controller invocation;
-  they are not token or spend caps. `pause` takes effect between tasks, `stop`
-  terminates the owned active process group, and `steer` queues guidance for the
-  next agent task. Do not report queued guidance as delivered to a running turn.
+- Runs are serial by default; `run --jobs N` allows 1–16 workers subject to
+  dependencies and checkout ownership. `shared` writers serialize; declared
+  `read-only` tasks may overlap but are not sandboxed. `worktree` gives each
+  attempt a retained committed-HEAD snapshot without uncommitted source files.
+  Dependencies do not merge worktrees. Use `workspaces RUN` to inspect ownership;
+  `workspace-remove RUN TASK ATTEMPT` removes only an inactive unchanged owned tree.
+  Checkout leases cover Workbench controllers sharing the same state root.
+- Time and launch limits bound one invocation, not tokens or spend. `pause`
+  drains active tasks; `stop` terminates owned active process groups. Failure
+  interrupts active peers. `steer` queues guidance for the next agent task that
+  starts, not a particular currently running task.
+- Opt into `--adapter duplex` only for Claude/Astra-compatible tasks needing live
+  controls. A runtime handshake must succeed before the prompt is sent. Use
+  `send RUN TASK TEXT --request-id ID` or `interrupt RUN TASK --request-id ID`
+  only while that attempt is initialized and input remains open. Acknowledged
+  input/interrupt means native receipt, never applied guidance or stopped effects.
+  Identical request IDs deduplicate; uncertain dispatches never auto-resend.
+  Input closes through a bounded drain heuristic, not an indefinite conversation.
+  Unresolved native permission decisions are denied with interruption; inspect
+  the native session for an explicit decision rather than broadening permissions.
 - `status` explains blockers, results and continuation actions; `timeline RUN_ID`
-  shows recent events and attempt outcomes. Native session IDs are local pointers,
+  shows live public event metadata and attempt outcomes without prompt/tool text
+  or reasoning. `status --metadata` is the smaller view without goals, paths,
+  summaries or notes. Native session IDs are local pointers,
   not portable conversations. Use explicit verification tasks and evidence notes
   for checks that matter. Process success alone is not proof of correctness.
   After a crash, `recover` records interruption; `retry` is an explicit decision
@@ -38,6 +60,20 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   Agent tasks receive bounded recent notes as context; notes matching the handoff
   credential checks are withheld with a notice. Imported notes remain
   historical claims; inspect `plan` for the complete notes when needed.
+- `plugin-cost DIR` estimates authoring size, not loaded context or billed tokens.
+  `eval-plan DIR --output FILE` inspects a conventional eval suite without
+  inference; `eval-run FILE` explicitly executes the native with/without test.
+  Preserve explicit tool/trust/model choices. Native cost ceilings are list-price
+  estimates and may overrun by one run. Use `eval-report` for numeric outcomes;
+  incomplete arms or graders cannot establish a comparison. Do not auto-remove
+  plugins from scores. Read the guide for evaluator bounds and local-report checks.
+- The separate [Claude frontend](../../extensions/claude-mod/README.md) is an
+  optional early-access status pane, not enabled by ordinary plugin installation.
+  `mod-check DIR --executable PATH` validates in isolated configuration; add
+  `--enable-function-hooks --test` for explicit native host tests, without a
+  global opt-in. Use its compatibility/test instructions when working on that
+  frontend; do not change global Claude settings or upgrade the user's runtime
+  merely to display Workbench status.
 
 Durable state is shared locally between both harnesses. Native conversation
 histories and hidden reasoning are not transferred. Rest and stopped runs need

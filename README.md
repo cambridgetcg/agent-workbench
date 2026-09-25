@@ -1,7 +1,9 @@
 # Agent Workbench
 
 Shared local tools for Codex and Claude Code: understand the active setup, save a
-workflow, control its execution, and hand useful context to the other harness.
+workflow, control its execution, compare plugin usefulness, and hand useful
+context to the other harness. Version 0.3.0 adds recorded launch evidence,
+native control receipts, bounded parallel execution and an optional Claude pane.
 Python 3.11 or later on macOS or Linux; no runtime dependencies or service account.
 
 ## Start a task
@@ -24,7 +26,7 @@ agent-workbench timeline RUN_ID --limit 20
 `--project PATH` to select another existing project. Choose the harness explicitly:
 `codex`, `claude`, `astra` or `astra-ultra`. `--prompt-file FILE` reads a prompt
 file; `--prompt-file -` reads bounded UTF-8 text from stdin. Optional `--name`,
-`--goal`, `--model` and `--effort` customize this single-task form. The default name
+`--goal`, `--model`, `--effort`, `--adapter` and `--workspace` customize this form. The default name
 comes from the first prompt line, capped at 160 characters. The goal defaults to
 the prompt, or to the run name for prompts longer than 20,000 characters; the task
 prompt stays intact. Native model and effort defaults apply unless overridden.
@@ -39,6 +41,8 @@ selects the latest run.
 ```sh
 agent-workbench doctor
 agent-workbench doctor --project /path/to/project --probe --json
+agent-workbench explain --project /path/to/project
+agent-workbench explain --harness claude --project /path/to/project
 ```
 
 The default doctor reads selected metadata and checks installed versions. It
@@ -50,7 +54,29 @@ policies and another process's environment may change the effective settings.
 Configured effort is labeled separately from observed request behavior.
 Each version includes its selected executable. If multiple CLI installations
 exist, check that path: a shell may select an older installation with different
-effort support. The runner preserves the PATH it inherits.
+effort support.
+
+`explain` shows selected configuration sources, scalar candidates, instruction
+file presence, hook/permission counts and plugin registration/cache/source
+versions. It does not open instruction bodies or authentication files, execute
+plugins, resolve every native merge rule, or claim a file was loaded by an agent.
+`explain --harness` also resolves the executable and probes native version/help.
+Help evidence and observed runtime acknowledgments remain separate. Astra
+wrappers are not executed during discovery; their native PATH child is a candidate
+whose forwarding and lifecycle must still be verified.
+
+Before each attempt, the runner records a private `launch.json` and uses the
+selected absolute entry point. This explains PATH drift between shells without
+changing the user's PATH or settings. Inspect recorded evidence with:
+
+```sh
+agent-workbench launch RUN_ID TASK_ID
+agent-workbench launch RUN_ID TASK_ID --attempt ATTEMPT_ID
+```
+
+Launch/configuration views include selected local paths and settings. Use
+`status RUN_ID --metadata` for the smaller interface without project paths,
+goals, prompts, summaries or notes.
 
 ## Save a workflow
 
@@ -95,7 +121,7 @@ requires the separately installed `claude-astra` launcher. A command task uses
 an `argv` array, for example `["python3", "-m", "unittest", "discover"]`, and
 executes without a shell. Optional `timeout_seconds` bounds an individual task.
 
-Tasks run **serially** in the declared project. A successor receives the goal
+Tasks run serially by default. A successor receives the goal
 and bounded predecessor results. Agent tasks also receive recent recorded notes
 as historical context. Existing native authentication, hooks and
 permissions apply; the runner adds no permission-bypass flags. Starting a run
@@ -103,6 +129,40 @@ invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise
 the defaults remain in force. Process success alone does not establish that an
 agent's answer is correct—add a verification task for an observable check.
+
+## Run independent tasks in parallel
+
+Use `run RUN_ID --jobs 2` through `--jobs 16` to allow bounded overlap. Every
+dependency must succeed before its successor starts. Set each task's `workspace`
+in its manifest, or use `create --workspace MODE` for a single task:
+
+| Workspace | Ownership and overlap |
+| --- | --- |
+| `shared` (default) | Uses the project checkout; serializes against other shared readers and writers |
+| `read-only` | Uses the project checkout; may overlap other declared readers |
+| `worktree` | Creates a separate detached Git worktree for each attempt; may overlap either mode |
+
+Read-only is a declaration, **not a sandbox**. Checkout leases coordinate only
+Workbench controllers using the same state root; they do not lock out editors
+or unrelated processes. Lease contention pauses the run with `workspace_busy`
+after existing work drains, without creating an attempt for the blocked task.
+
+Worktrees require a committed Git HEAD. They contain that snapshot and preserve
+the project's path relative to the repository root. Uncommitted and untracked
+source files are not copied. Worktrees remain available after execution, and
+dependency joins neither merge their changes nor copy predecessor worktrees.
+Choose an explicit integration task when results need to be combined.
+
+```sh
+agent-workbench workspaces RUN_ID
+agent-workbench workspace-remove RUN_ID TASK_ID ATTEMPT_ID
+```
+
+Removal is explicit and accepts only the recorded Workbench-owned worktree when
+execution has ended, the tree is clean, and HEAD still matches its base commit.
+Changed files or new commits cause refusal; nothing is force-removed or merged.
+Incomplete checkout preparation also remains recorded for inspection and is
+refused by this cleanup command.
 
 ## Control and recover
 
@@ -113,21 +173,27 @@ agent-workbench pause RUN_ID
 agent-workbench steer RUN_ID 'Keep the public API unchanged.'
 agent-workbench stop RUN_ID
 agent-workbench status RUN_ID --json
+agent-workbench status RUN_ID --metadata
 agent-workbench timeline RUN_ID --limit 20 --json
 ```
 
 `status` shows task results, attempt and native session identifiers when recorded,
-dependency blockers, and explicit next actions. `timeline` shows a bounded view
-of recorded events and selected attempt metadata: the most recent 20 entries by
-default, with `--limit` accepting 1–200. It excludes raw logs and note or guidance
-bodies. Native session pointers identify a separate native resume action; they
+dependency blockers, launch/workspace metadata, receipts and explicit next
+actions. `timeline` includes public native events while a task runs: session,
+turn, tool and delegated-task metadata where emitted. It returns the most recent
+20 entries by default, with `--limit` accepting 1–200. The journal retains up to
+2,000 native events and reports dropped counts. It excludes prompts, text output,
+tool arguments, reasoning and note/guidance bodies. Native session pointers
+identify a separate native resume action; they
 do not turn `run` into native conversation resumption.
 
-- Pause takes effect between tasks. A later `run` continues pending tasks.
-- Stop terminates the active subprocess group owned by this controller. It does
+- Pause stops new launches and lets active tasks finish. A later `run` continues pending tasks.
+- Stop terminates active subprocess groups owned by this controller. It does
   not undo effects already performed or stop an unrelated native session.
-- Guidance is queued for the **next agent task**. V1 does not inject it into an
-  already-running native conversation.
+- `steer` queues guidance for the **next agent task**; it does not address a
+  running turn. With parallel agents, the next task that starts consumes it.
+- A failed task stops new launches and interrupts active peers. Their possibly
+  executed effects remain recorded; neither peers nor failed tasks auto-retry.
 - Time and launch limits apply to one controller invocation. They are not hard
   token or monetary budgets. Native agents can make several model calls inside
   one launch.
@@ -148,6 +214,108 @@ agent-workbench run RUN_ID
 Recovery records stale work as interrupted and does not execute it. Retry is an
 explicit reset of one unsuccessful task. Completed tasks are retained. A lock
 prevents two controllers from operating on the same run simultaneously.
+
+## Send input to an active Claude-compatible task
+
+Duplex control is explicit and available for `claude`, `astra` and `astra-ultra`:
+
+```sh
+agent-workbench create --harness claude --adapter duplex \
+  --prompt 'Investigate the parser failure and explain the evidence.'
+agent-workbench run RUN_ID --timeout 900
+# From another terminal, while task "work" has initialized and input is open:
+agent-workbench send RUN_ID work 'Also check empty-array handling.' --request-id followup-1
+agent-workbench interrupt RUN_ID work --request-id interrupt-1
+```
+
+The runner checks advertised stream-input flags, then requires a correlated
+initialize acknowledgment before sending the initial prompt. It preserves the
+native system prompt and adds no `--settings` or permission-bypass flags. Astra's
+wrapper remains responsible for its connection configuration and proxy lifetime.
+Codex retains the process adapter and process-group stop behavior.
+
+Requests are persisted against a particular attempt before dispatch. Statuses
+distinguish `queued`, `dispatching`, `sent`, `acknowledged`, `rejected`,
+`unacknowledged` and `not_sent`. An echoed input UUID or control response is a
+**receipt**, never proof that guidance was applied or that effects have stopped.
+Reusing a request ID returns its existing record; conflicting reuse fails.
+Crashes and lost receipts never cause automatic resend.
+
+Native permission rules remain authoritative. If an unresolved permission
+decision reaches the adapter, it sends deny with interruption and reports
+`native_decision_required`; inspect the native session before explicitly resuming
+there. Unregistered hook/MCP callbacks fail explicitly. No decision defaults to
+allow, and no replacement SDK hooks are installed.
+
+Input closes using observed completion evidence, tracked local agents/workflows,
+queued requests and a 0.5-second settling interval. This is a shutdown heuristic:
+native inputs can coalesce and background continuations can race with it. There
+is no one-result-per-input guarantee. Workbench
+still waits for native process exit and a successful terminal result, and applies
+the invocation deadline. It does not promise an indefinitely open conversation.
+Where emitted, result UUID receipts identify the inputs consumed by a turn.
+Older producers get a narrow single-input fallback; overlapping inputs without
+completion receipts remain unverified and may wait for native exit, an explicit
+stop or a deadline. Selecting a newer executable for a run does not upgrade the
+user's default Claude installation.
+
+## Compare a plugin with its baseline
+
+`plugin-cost` inventories local authoring files. Its character-count token
+estimate is not tokenizer output, actual loaded context or a per-turn bill.
+
+```sh
+agent-workbench plugin-cost /path/to/plugin
+agent-workbench eval-plan /path/to/plugin --runs 3 --max-cases 20 \
+  --timeout 900 --max-cost-usd 5 --output ./evaluation-plan.json
+agent-workbench eval-run ./evaluation-plan.json
+agent-workbench eval-report /path/to/native/result.json
+```
+
+Planning reads a conventional `evals/` suite and native evaluator help without
+inference. The saved plan pins plugin/suite hashes and executable metadata;
+`eval-run` refuses changed inputs and invokes the native with/without comparison.
+This executes real agents and graders using native authentication. Tools and
+plugin-directory trust are granted only through explicit `--allow-tool` and
+`--trust-plugin` plan options. Model and judge-model overrides are also explicit.
+
+Plans bound repetitions (1–10 per arm), the entire suite (up to 50 cases), and
+wall time (up to 3,600 seconds). The native cost ceiling is a list-price estimate
+and may overrun by one agent run; it is not a hard account-charge budget. Only
+verified local-report contracts are accepted, and publication is not requested.
+Private native output stays under the evaluation's state directory.
+
+Reports keep numeric score, cost and timing measurements without prompts,
+traces or grader evidence. Partial runs, errors, missing/unbalanced arms and
+skipped paid graders are not eligible for comparison. Scores are grader outcomes,
+not proof of correctness or causation. No plugin is removed automatically.
+
+## Optional Claude status pane
+
+The separate [Claude mod](extensions/claude-mod/README.md) adds
+`/workbench-status RUN_ID`, with Refresh and Close. It reads metadata snapshots
+and selected timeline events; it does not execute tasks, steer agents, alter
+permissions or add task content to model context.
+
+The native host tests passed on Claude Code 2.1.282 with the explicit per-process
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` flag. This early-access frontend is loaded
+separately with `--plugin-dir`; installing the ordinary Workbench plugin does
+not enable it or upgrade Claude. Follow its guide for compatibility and isolated
+host tests. A recorded status snapshot does not prove process liveness.
+
+```sh
+agent-workbench mod-check ./extensions/claude-mod --executable /path/to/compatible/claude
+agent-workbench mod-check ./extensions/claude-mod --executable /path/to/compatible/claude \
+  --enable-function-hooks --test
+```
+
+`mod-check` uses a temporary Claude configuration and child-process-only settings.
+It performs strict validation by default; `--test` explicitly runs the selected
+plugin's native host tests. `--enable-function-hooks` opts in only for those check
+processes. Validation and recognized positive test results are reported separately;
+unknown output or an unavailable runtime cannot establish compatibility. No model
+request, global installation or persistent settings change is performed by the
+check. Host tests execute plugin test code and do not prove live terminal painting.
 
 ## Handoff
 
@@ -221,9 +389,9 @@ work, with exact source revisions and installed-version boundaries.
 
 | Track | Implemented | Next |
 | --- | --- | --- |
-| [Workflows](docs/roadmaps/workflows.md) | Manifest or single-task creation, serial dependencies, mixed harnesses | Explicit isolation and bounded parallelism |
-| [Run control](docs/roadmaps/run-control.md) | Pause, stop, queued guidance, status, timeline and explicit continuation actions | Supported native control adapters |
-| [Doctor](docs/roadmaps/doctor.md) | Redacted local metadata, provenance and loopback health probes | Local request capture and capability checks |
+| [Workflows](docs/roadmaps/workflows.md) | Mixed harnesses, bounded concurrency, explicit checkout ownership and retained worktrees | Explicit artifact integration and reusable workflow packs |
+| [Run control](docs/roadmaps/run-control.md) | Live event metadata, Claude duplex receipts, pause/stop/recovery and optional status pane | Native run-boundary signals and interactive permission bridging |
+| [Doctor](docs/roadmaps/doctor.md) | Configuration explanations, executable/capability evidence and plugin evaluation | Stronger native effective-configuration evidence |
 | [Handoffs](docs/roadmaps/handoffs.md) | Versioned artifacts, inspectable history and bounded note continuity | Project comparison and evidence reconciliation |
 
 ## Development

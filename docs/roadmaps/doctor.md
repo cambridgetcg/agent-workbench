@@ -1,47 +1,63 @@
-# Connection and execution doctor: both harnesses
+# Connection and execution evidence
 
-Status: v0.1 implemented and installed in both harnesses. Offline tests, a
-command-only handoff check, and a live Codex → Astra workflow passed on 2026-09-25.
+Status: v0.3.0 implements launch profiles, partial configuration explanations,
+plugin inventory and bounded native evaluations. No global settings or native
+runtime upgrade is required for these interfaces.
 
-Explain which layer controls a run: installed CLI, authentication freshness,
-selected settings, local adapter and actual model request. The recent Astra
-integration showed why client effort, provider reasoning and orchestration must
-be reported separately.
+## Implemented: explain the actual launch
 
-## v0.1: read-only, selected metadata
+- `doctor` retains local version/auth-freshness metadata and optional loopback
+  health probes. Default diagnosis makes no inference request; a health response
+  is not proof that a model call or login will succeed.
+- `explain` selects local settings with contributing sources, hook/permission
+  counts, model-related environment candidates, instruction-file presence and
+  plugin registration/cache/source versions. Instruction bodies and auth files
+  are not read. Scalar candidates are not complete native effective settings.
+- `explain --harness HARNESS` records PATH candidates, selected executable,
+  version and advertised interfaces. Native help evidence is kept separate from
+  protocol acknowledgments. Missing, unreadable and unverified data stay explicit.
+- Each attempt stores private `launch.json` before execution and uses the selected
+  absolute entry point. `launch RUN TASK [--attempt ID]` inspects that evidence.
+- Astra wrappers are not executed during discovery. Their Claude PATH candidate
+  is reported separately because wrapper forwarding, reserved settings and proxy
+  lifetime cannot be established from native help alone.
+- Plugin drift checks compare manifest versions. Equal versions do not prove
+  that source and cache contain identical bytes.
 
-- Report installed versions, available launchers and selected configuration
-  values with source/provenance. Do not dump configuration files or environment.
-- Inspect authentication freshness locally without displaying tokens, account
-  identifiers or email. Freshness is not proof that a remote login will succeed.
-- Identify active Astra loopback proxies and distinguish requested settings,
-  configured translation and observed results. Preserve uncertainty explicitly.
-- Default diagnosis makes no inference or network calls. An explicit `--probe`
-  may check configured loopback health endpoints only, never send a model prompt.
-- Explain the Astra Ultra preset as native Ultracode orchestration plus the
-  provider's supported per-request effort; do not equate the UI label with proof
-  of the serialized upstream request.
+Acceptance evidence: fixture homes cover PATH drift, wrapper boundaries, malformed
+configuration, instruction/auth non-reading, old-version AGENTS.md limits, plugin
+version drift and selected-metadata privacy. Integration tests verify private
+launch evidence and pre-prompt initialization failure without sending task input.
 
-Acceptance: fixture homes cover absent/stale/fresh auth and conflicting settings;
-reports contain no sentinel credentials or account identifiers; default diagnosis
-opens no network connection; opt-in probes cannot follow a redirect off loopback.
-Unknown or unreadable state is reported rather than silently treated as healthy.
+## Implemented: measure a plugin against its baseline
 
-## Next: capture-backed capability checks
+`plugin-cost` counts bounded authoring files and estimates tokens as characters
+per four. It does not measure loaded context, dynamic tool schemas or account
+charges. `eval-plan` inspects a conventional `evals/` suite and evaluator help,
+then pins executable metadata and plugin/suite hashes without model calls.
 
-Add a credential-free local request capture for installed CLI versions, with
-explicit consent for any later inference smoke. Compare serialized request
-effort and workflow capability against the intended execution profile.
+Explicit `eval-run` uses the native with/without evaluator, bounded repetitions,
+case count, process wall time and native list-price cost ceiling. Report behavior
+must be verified as local-only. Tool grants, directory trust and model overrides
+are explicit plan inputs. A native cost ceiling may overrun by one agent run.
 
-Acceptance: a changed client flag or adapter mapping yields a concrete mismatch,
-and the report labels static configuration, local capture and provider response
-as different evidence. Captures exclude raw prompts and credentials from reports.
+`eval-report` retains numeric grader outcomes and missing-measurement uncertainty.
+Errors, partial results, unbalanced arms and skipped graders cannot support a
+comparison. Raw prompts/traces remain private, and a score does not prove
+correctness or causation. Nothing removes a plugin automatically.
 
-## Later: supported capability negotiation
+Acceptance evidence: synthetic native evaluators cover local-only behavior,
+changed-input refusal, bounded cases, missing/malformed reports, incomplete arms,
+private files and report redaction. Live evaluation is separate from offline CI.
 
-Prefer stable SDK/server capability metadata where available. A shared native
-status display or consistent effort negotiation across products needs upstream
-product/API support; local plugins can only explain observable behavior.
+## Next: stronger native evidence
 
-Acceptance: versioned capability metadata replaces a documented inference, with
-a clear fallback when an installed version cannot expose it.
+Prefer an upstream effective-configuration/context API and explicit capability
+negotiation when available. Local discovery cannot infer managed policy, trust,
+all setting merges, what a wrapper actually forwards, or what reached a provider.
+A future request capture must keep requested, observed serialized and provider
+accepted values separate without exposing credentials, prompts or reasoning.
+
+Acceptance: a new observation replaces a named uncertainty, and unsupported
+versions retain an honest fallback. No version check alone activates early-access
+features or changes authentication and permissions.
