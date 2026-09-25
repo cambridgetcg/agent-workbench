@@ -215,6 +215,10 @@ selected for ordinary coding requests merely because it is installed.
 
 ## Roadmaps
 
+The [Claude Code source and customization deep dive](docs/research/claude-code-2026-09-25.md)
+maps native configuration, SDK controls and early-access mods to future Workbench
+work, with exact source revisions and installed-version boundaries.
+
 | Track | Implemented | Next |
 | --- | --- | --- |
 | [Workflows](docs/roadmaps/workflows.md) | Manifest or single-task creation, serial dependencies, mixed harnesses | Explicit isolation and bounded parallelism |
