@@ -1,15 +1,16 @@
 # Agent Workbench
 
-Shared local tools for Codex and Claude Code: understand the active setup, save a
+Shared local tools for Codex, Claude Code and Hermes: understand the active setup, save a
 workflow, control its execution, compare plugin usefulness, and hand useful
-context to the other harness. Version 0.3.0 adds recorded launch evidence,
-native control receipts, bounded parallel execution and an optional Claude pane.
+context to another harness. Version 0.4.0 adds native Hermes workflows and an
+access-token bridge to an existing ChatGPT subscription. Recorded launch evidence,
+native Claude control receipts, parallel execution and the optional Claude pane remain available.
 Python 3.11 or later on macOS or Linux; no runtime dependencies or service account.
 
 ## Start a task
 
 From this checkout, run `python3 scripts/agent-workbench`. A local installation
-can expose the same script as `agent-workbench` on PATH. Both plugins share the
+can expose the same script as `agent-workbench` on PATH. All plugin formats share the
 same implementation and private state directory.
 
 ```sh
@@ -24,7 +25,7 @@ agent-workbench timeline RUN_ID --limit 20
 
 `create` saves an **unstarted** run for the current project directory. Use
 `--project PATH` to select another existing project. Choose the harness explicitly:
-`codex`, `claude`, `astra` or `astra-ultra`. `--prompt-file FILE` reads a prompt
+`codex`, `claude`, `astra`, `astra-ultra`, `hermes` or `hermes-astra-ultra`. `--prompt-file FILE` reads a prompt
 file; `--prompt-file -` reads bounded UTF-8 text from stdin. Optional `--name`,
 `--goal`, `--model`, `--effort`, `--adapter` and `--workspace` customize this form. The default name
 comes from the first prompt line, capped at 160 characters. The goal defaults to
@@ -45,7 +46,8 @@ agent-workbench explain --project /path/to/project
 agent-workbench explain --harness claude --project /path/to/project
 ```
 
-The default doctor reads selected metadata and checks installed versions. It
+The default doctor reads selected metadata and checks installed versions, except
+Hermes: its version command can check for updates, so doctor reports presence only. It
 does not log in, refresh credentials, make inference requests, or inspect other
 processes' environments. `--probe` sends authenticated health requests only to
 existing loopback gateways. It never follows a redirect to another host.
@@ -115,7 +117,8 @@ Manifest files and stdin use the same validation and 2,000,000-byte input limit.
 The manifest form cannot be combined with single-task prompt options. Both forms
 create a saved run without launching anything.
 
-Supported harnesses: `codex`, `claude`, `astra`, `astra-ultra`, and `command`.
+Supported harnesses: `codex`, `claude`, `astra`, `astra-ultra`, `hermes`,
+`hermes-astra-ultra`, and `command`.
 Agent tasks use a `prompt` and optional explicit `model` / `effort`. Astra
 requires the separately installed `claude-astra` launcher. A command task uses
 an `argv` array, for example `["python3", "-m", "unittest", "discover"]`, and
@@ -384,11 +387,19 @@ local marketplace and install `agent-workbench` from that marketplace. On the
 original installation, the Plugin Creator scaffold registers it in the personal
 marketplace and `codex plugin add agent-workbench@personal` installs it.
 
-Start a new session after plugin installation. Ask either agent to use Agent
+Hermes loads the portable root `plugin.json` and the same skill. See the
+[Hermes guide](docs/hermes.md) for the Astra Ultra subscription profile, native
+session commands and local plugin installation.
+
+Start a new session after plugin installation. Ask an agent to use Agent
 Workbench for diagnostics, workflow management or a handoff. The plugin is not
 selected for ordinary coding requests merely because it is installed.
 
 ## Roadmaps
+
+The [Hermes source and customization map](docs/research/hermes-agent-2026-09-25.md)
+and [module/tool inventory](docs/research/hermes-agent-2026-09-25.inventory.json)
+cover the native runtime, extension surfaces and declared tool prerequisites.
 
 The [Claude Code source and customization deep dive](docs/research/claude-code-2026-09-25.md)
 maps native configuration, SDK controls and early-access mods to future Workbench

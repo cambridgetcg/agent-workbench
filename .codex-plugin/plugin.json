@@ -1,7 +1,7 @@
 {
   "name": "agent-workbench",
-  "version": "0.3.0+codex.20260925113941",
-  "description": "Local agent diagnostics, native control receipts, isolated workflows, plugin evaluations and portable handoffs.",
+  "version": "0.4.0+codex.20260925121350",
+  "description": "Local diagnostics, durable workflows and portable handoffs for Codex, Claude Code and Hermes.",
   "author": {
     "name": "Local developer"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Agent Workbench",
     "shortDescription": "Inspect, run and hand off local agent work.",
-    "longDescription": "Explain local configuration and launch evidence, manage parallel workflows and native control receipts, evaluate plugin usefulness, and transfer explicit handoffs between Codex and Claude Code.",
+    "longDescription": "Explain local configuration and launch evidence, manage parallel workflows and native control receipts, evaluate plugin usefulness, and transfer explicit handoffs between Codex, Claude Code and Hermes.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [],

@@ -34,7 +34,10 @@ WARNING_TEXT_LIMIT = 512
 NOTE_LIMIT = 8
 NOTE_CONTEXT_LIMIT = 8000
 _RETRYABLE = {"failed", "cancelled", "interrupted"}
-_EXECUTABLES = {"codex": "codex", "claude": "claude", "astra": "claude-astra", "astra-ultra": "claude-astra-ultra"}
+_EXECUTABLES = {"codex": "codex", "claude": "claude", "astra": "claude-astra", "astra-ultra": "claude-astra-ultra",
+                "hermes": "hermes", "hermes-astra-ultra": "hermes-astra-ultra"}
+_HERMES = {"hermes", "hermes-astra-ultra"}
+_EXTENDED_CLEANUP = {"astra", "astra-ultra", *_HERMES}
 
 
 class WorkflowBusy(RuntimeError):
@@ -192,6 +195,15 @@ def _argv(task):
         if task.get("effort"):
             args += ["--config", "model_reasoning_effort=" + json.dumps(task["effort"])]
         return args + ["-"]
+    if harness in _HERMES:
+        # Native JSON mode implies quiet single-query execution. Query stdin
+        # preserves arbitrary text without a shell or permission-bypass flags.
+        args = [_EXECUTABLES[harness], "chat", "--query-file", "-", "--format", "stream-json"]
+        if task.get("model"):
+            args += ["--model", task["model"]]
+        if task.get("effort"):
+            args += ["--reasoning", task["effort"]]
+        return args
     args = [_EXECUTABLES[harness], "--print", "--verbose", "--output-format", "stream-json"]
     if task.get("model"):
         args += ["--model", task["model"]]
@@ -344,7 +356,8 @@ def _extract_result(harness, stdout_path):
                 malformed = True
                 continue
             candidate = event.get("thread_id") if event.get("type") == "thread.started" else event.get("session_id")
-            if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,160}", candidate):
+            if (isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,160}", candidate)
+                    and redact_summary(candidate) == candidate):
                 session_id = candidate
             kind = event.get("type")
             if not isinstance(kind, str):
@@ -371,6 +384,24 @@ def _extract_result(harness, stdout_path):
                 elif kind in {"turn.failed", "error"}:
                     terminal = False
                     error = str(event.get("error") or event.get("message") or "Native turn failed")
+            elif harness in _HERMES:
+                if kind == "result":
+                    from .native import hermes_result_valid
+                    # One query emits exactly one authoritative final result.
+                    # Neither a recovered tool error nor a text delta is a
+                    # terminal outcome; a later success cannot erase failure.
+                    if terminal is not None or not hermes_result_valid(event):
+                        malformed = True
+                        continue
+                    terminal = event["exit_code"] == 0 and not event.get("error")
+                    final_text = event["text"][:FINAL_LIMIT]
+                    if not terminal:
+                        error = event.get("error") or "Native Hermes result failed"
+                elif kind == "text" and not isinstance(event.get("text"), str):
+                    malformed = True
+                elif kind == "error":
+                    terminal = False
+                    error = "Native Hermes error"
             else:
                 if kind == "assistant":
                     message = event.get("message")
@@ -625,9 +656,9 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted, ownership):
     ownership.attach_attempt(attempt_id)
     workspace_leases = ExitStack()
     task = captured["task"]
-    # Astra owns a separately-sessioned inference proxy and performs its own
-    # bounded cleanup (up to two five-second waits) on SIGTERM.
-    termination_grace = 12 if task["harness"] in {"astra", "astra-ultra"} else TERMINATE_GRACE_SECONDS
+    # Astra cleans up its separately-sessioned proxy; Hermes signal handlers
+    # clean up native tools that may own detached subprocesses.
+    termination_grace = 12 if task["harness"] in _EXTENDED_CLEANUP else TERMINATE_GRACE_SECONDS
     process = None
     reason = None
     failure_kind = None
@@ -892,7 +923,7 @@ def recover_run(store, run_id):
             group = attempt.get("process_group")
             if _group_exists(group):
                 if attempt.get("process_identity") and _process_identity(group) == attempt["process_identity"]:
-                    _terminate_group(group, grace_seconds=12 if task["harness"] in {"astra", "astra-ultra"} else TERMINATE_GRACE_SECONDS)
+                    _terminate_group(group, grace_seconds=12 if task["harness"] in _EXTENDED_CLEANUP else TERMINATE_GRACE_SECONDS)
                 else:
                     unresolved.add(attempt["id"])
         def recover(current):

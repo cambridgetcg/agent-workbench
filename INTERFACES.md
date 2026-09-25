@@ -23,7 +23,8 @@ Python package: `agent_workbench/`. Public CLI: `agent-workbench`.
 - `add_event(state, kind, **fields)` appends a timestamped event.
 
 Manifest version 1: `{version, name, goal, tasks}`. Each task has `id`,
-`harness` (`codex`, `claude`, `astra`, `astra-ultra`, or `command`),
+`harness` (`codex`, `claude`, `astra`, `astra-ultra`, `hermes`,
+`hermes-astra-ultra`, or `command`),
 `depends_on` (default []), and either `prompt` (agent) or `argv` (command array).
 Optional model and effort are explicit user choices. Command tasks run argv
 without a shell. Optional task `timeout_seconds` bounds one task.
@@ -123,9 +124,16 @@ plus interruption, other unregistered callbacks receive an error. Native rules
 that settle a decision first remain authoritative; no callback defaults to allow.
 
 `normalize_event(frame, harness='claude') -> list[dict]` handles Claude-compatible
-NDJSON and Codex JSON. It allowlists session/tool/task pointers, fixed event/status
+NDJSON, Codex JSON and native Hermes JSONL. It allowlists session/tool/task pointers, fixed event/status
 values and bounded numeric usage. It excludes text, prompts, tool inputs, thinking,
 raw errors, provider configuration and arbitrary paths/account values.
+
+Hermes process tasks use `chat --query-file - --format stream-json`, never the
+top-level oneshot shortcut that changes native approval behavior. They require
+one terminal result with a valid session ID, string text, an integer (not boolean)
+exit code of zero, no error and process exit zero. Tool errors are not terminal
+results. Hermes has no Workbench duplex handshake; stop owns the process group
+and grants native detached-tool cleanup time before escalation.
 
 `PublicJournal` batches selected events into atomic state; it keeps the latest
 2,000 native events and tracks dropped counts. `EventTail` reads growing private
@@ -178,10 +186,22 @@ health endpoints, no model calls. Distinguish inferred, configured and observed.
 
 `inspect_launch(task, project, *, env=None, home=None) -> dict` resolves PATH
 candidates and selected absolute entry point. Native CLIs receive version/help
-probes only (Codex also exec help); command tasks and Astra wrappers are not
+probes only (Codex also exec help, Hermes chat help); command tasks and Astra wrappers are not
 executed during discovery. A wrapper's native record is its PATH child candidate,
 not proof of what the wrapper launches. Capability evidence distinguishes
 advertised interfaces from runtime control acknowledgments and unavailable data.
+Hermes version probes may check upstream for updates; the default doctor skips
+that probe and only reports executable presence plus read-only binding metadata.
+Hermes profile/provider configuration is not resolved by this inspection.
+
+## Subscription bridge (`codex_token.py`)
+
+`borrow_token(binding, check=False, env=None, timeout=12)` is the private
+credential interface for Hermes `key_cmd`. The binding pins an account and
+Codex home. Normal results contain an access token and bounded cache lifetime;
+they must never enter public diagnostics. Only official Codex app-server refresh
+updates credentials, under the shared refresh lock. `check=True` returns selected
+metadata and never refreshes. CLI `--check` is the human-facing diagnostic path.
 
 `explain_configuration(project, *, home=None, env=None) -> dict` reads selected
 local settings, scalar candidates with contributing sources, permission/hook
@@ -273,7 +293,7 @@ and queue counts, without goals, summaries, notes, paths or logs.
 doctor [--project PATH] [--probe] [--json]
 explain [--project PATH] [--harness HARNESS] [--json]
 create [MANIFEST] [--project PATH]
-create --harness codex|claude|astra|astra-ultra (--prompt TEXT | --prompt-file FILE|-)
+create --harness codex|claude|astra|astra-ultra|hermes|hermes-astra-ultra (--prompt TEXT | --prompt-file FILE|-)
        [--project PATH] [--name TEXT] [--goal TEXT] [--model MODEL] [--effort EFFORT]
        [--adapter process|duplex] [--workspace shared|read-only|worktree]
 list [--project PATH] [--json]

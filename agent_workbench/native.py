@@ -82,6 +82,65 @@ def _event(kind: str, frame: dict, **fields) -> dict:
     return {"kind": kind, **_pointers(frame, "session_id", "parent_tool_use_id"), **fields}
 
 
+def hermes_result_valid(frame: dict) -> bool:
+    """Validate the native single-query terminal envelope, without its content.
+
+    Hermes stream_json.py at 59004a62356f3a4697ab0fe8ad5086d2b405e2a6
+    emits one result with an exit code, session pointer and final response.
+    Bool exit codes, missing final text and arbitrary error objects are invalid.
+    """
+    return (frame.get("type") == "result"
+            and type(frame.get("exit_code")) is int and 0 <= frame["exit_code"] <= 255
+            and isinstance(frame.get("text"), str)
+            and _pointer(frame.get("session_id")) is not None
+            and ("error" not in frame or isinstance(frame["error"], str)))
+
+
+def _hermes_event(frame: dict) -> list[dict]:
+    kind = frame.get("type")
+    if kind == "system" and frame.get("subtype") == "init":
+        return [_event("native_session", frame)]
+    if kind == "text" and isinstance(frame.get("text"), str):
+        return [{"kind": "native_message", "role": "assistant"}]
+    if kind in ("tool_use", "tool_result"):
+        event = {"kind": "native_tool", "status": "started" if kind == "tool_use" else "completed"}
+        if kind == "tool_result" and frame.get("is_error") is True:
+            event["status"] = "failed"
+        # Native plugins can supply arbitrary names. Unknown names remain an
+        # unnamed tool event rather than entering public metadata verbatim.
+        names = {"terminal": "Bash", "read_file": "Read", "write_file": "Write",
+                 "patch": "Edit", "search_files": "Grep", "web_search": "WebSearch",
+                 "web_extract": "WebFetch", "delegate_task": "Agent"}
+        name = frame.get("name")
+        if isinstance(name, str) and name in names:
+            event["tool"] = names[name]
+        if pointer := _pointer(frame.get("tool_call_id")):
+            event["tool_use_id"] = pointer
+        duration = frame.get("duration_ms")
+        if type(duration) is int and 0 <= duration <= 2**53:
+            event["duration_ms"] = duration
+        return [event]
+    if kind == "result":
+        valid = hermes_result_valid(frame)
+        success = valid and frame["exit_code"] == 0 and not frame.get("error")
+        event = _event("native_turn", frame, status="succeeded" if success else "failed")
+        if valid:
+            event["exit_code"] = frame["exit_code"]
+        tokens = frame.get("tokens")
+        if isinstance(tokens, dict):
+            mapping = {"input": "input_tokens", "output": "output_tokens", "total": "total_tokens",
+                       "cache_read": "cache_read_input_tokens", "cache_write": "cache_creation_input_tokens"}
+            if usage := _usage({target: tokens[source] for source, target in mapping.items() if source in tokens}):
+                event["usage"] = usage
+        duration = frame.get("duration_ms")
+        if type(duration) is int and 0 <= duration <= 2**53:
+            event["duration_ms"] = duration
+        return [event]
+    if kind == "error":
+        return [{"kind": "native_turn", "status": "failed"}]
+    return []
+
+
 def normalize_event(frame: object, harness: str = "claude") -> list[dict]:
     """Select public event metadata; never pass through arbitrary native fields.
 
@@ -93,6 +152,8 @@ def normalize_event(frame: object, harness: str = "claude") -> list[dict]:
     if not isinstance(frame, dict):
         return []
     kind = frame.get("type")
+    if harness in {"hermes", "hermes-astra-ultra"}:
+        return _hermes_event(frame)
     if harness == "codex":
         if kind == "thread.started":
             pointer = _pointer(frame.get("thread_id"))

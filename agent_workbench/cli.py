@@ -138,7 +138,7 @@ def plan_view(state: dict) -> dict:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="agent-workbench", description="Local diagnostics, durable workflows and handoffs for Codex and Claude Code.")
+    p = argparse.ArgumentParser(prog="agent-workbench", description="Local diagnostics, durable workflows and handoffs for Codex, Claude Code and Hermes.")
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument("--state-dir", type=Path, help="Override private local state directory")
     sub = p.add_subparsers(dest="command", required=True)

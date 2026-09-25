@@ -16,7 +16,7 @@ import uuid
 
 RUN_ID = re.compile(r"[a-f0-9]{32}\Z")
 TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
-HARNESSES = {"codex", "claude", "astra", "astra-ultra", "command"}
+HARNESSES = {"codex", "claude", "astra", "astra-ultra", "hermes", "hermes-astra-ultra", "command"}
 EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra", "ultracode"}
 MAX_DOCUMENT_BYTES = 2_000_000
 
@@ -88,13 +88,13 @@ def validate_manifest(manifest: dict) -> dict:
                 out["model"] = _text(task["model"], "model", 200)
                 if out["model"].startswith("-"):
                     raise ValueError("Invalid model.")
-                if harness in {"astra", "astra-ultra"} and out["model"] != "gpt-6-astra":
+                if harness in {"astra", "astra-ultra", "hermes-astra-ultra"} and out["model"] != "gpt-6-astra":
                     raise ValueError("Astra launchers support gpt-6-astra only.")
             if "effort" in task:
                 effort = task["effort"]
                 if not isinstance(effort, str) or effort not in EFFORTS:
                     raise ValueError("Unknown effort.")
-                if harness == "codex" and effort == "ultracode":
+                if harness in {"codex", "hermes", "hermes-astra-ultra"} and effort == "ultracode":
                     raise ValueError("Ultracode is a Claude workflow setting.")
                 if harness == "claude" and effort == "ultra":
                     raise ValueError("Native Claude does not accept ultra; use max or ultracode.")

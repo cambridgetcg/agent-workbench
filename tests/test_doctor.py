@@ -96,6 +96,40 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(config["inferred_selected"]["approval_policy"]["source"], "~/.codex/config.toml")
         self.assertIn("untrusted", " ".join(config["limitations"]))
 
+    def test_hermes_binding_diagnostics_never_launch_or_refresh(self):
+        from agent_workbench import codex_token
+        token = self.auth(jwt(time.time() - 100))
+        binding = self.write(".hermes/profiles/astra-ultra/workbench-subscription.json",
+                             {"expected_account_id": "private-account-id",
+                              "codex_home": str(self.home / ".codex")})
+        binding.chmod(0o600)
+        before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        with patch.object(codex_token, "_official_refresh", side_effect=AssertionError("No refresh")):
+            report = self.diagnose()
+        after = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        self.assertEqual(before, after)
+        hermes = report["hermes"]
+        self.assertTrue(hermes["astra_ultra_profile_present"])
+        self.assertEqual(hermes["subscription_binding"]["status"], "refresh_needed")
+        self.assertFalse(hermes["subscription_binding"]["refresh_performed"])
+        self.assertEqual(hermes["executables"]["hermes"]["status"], "present")
+        self.assertFalse(any("hermes" in argv[0] for argv, _ in self.calls))
+        rendered = json.dumps(report) + doctor.format_report(report)
+        for secret in (token, "private-account-id", "private-refresh-token", str(binding)):
+            self.assertNotIn(secret, rendered)
+
+    def test_hermes_changed_account_and_insecure_binding_are_metadata_only(self):
+        self.auth()
+        binding = self.write(".hermes/profiles/astra-ultra/workbench-subscription.json",
+                             {"expected_account_id": "different-private-account",
+                              "codex_home": str(self.home / ".codex")})
+        binding.chmod(0o600)
+        report = self.diagnose()
+        self.assertEqual(report["hermes"]["subscription_binding"]["status"], "account_changed")
+        self.assertNotIn("different-private-account", json.dumps(report))
+        binding.chmod(0o644)
+        self.assertEqual(self.diagnose()["hermes"]["subscription_binding"]["status"], "binding_invalid")
+
     def test_config_root_overrides_and_withheld_custom_values(self):
         self.env.update(CODEX_HOME=str(self.home / "other"), CLAUDE_CONFIG_DIR=str(self.home / "claude-other"))
         self.write("other/config.toml", 'model = "private-person@example.invalid"\nmodel_provider = "private-provider-id"\n')

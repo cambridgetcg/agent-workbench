@@ -353,6 +353,39 @@ def _astra(home, env, token, now, probe):
             "limitation": "Session files can outlive a process; listener/health evidence is separate. Only the first Codex provider/model and exact or wildcard payload model selectors are reviewed."}
 
 
+def _hermes(home, env):
+    # Hermes --version can perform an upstream update check. Default doctor
+    # reports executable presence without invoking it or importing Hermes.
+    executables = {}
+    for name in ("hermes", "hermes-astra-ultra"):
+        path = shutil.which(name, path=env.get("PATH", os.defpath))
+        if path is None:
+            executables[name] = {"status": "not_found"}
+            continue
+        try:
+            selected = "~/" + Path(path).relative_to(home).as_posix()
+        except ValueError:
+            selected = path
+        if len(selected) > 512 or any(ord(c) < 32 for c in selected) or any(
+                "@" in part or part.startswith(("sk-", "sk_", "eyJ")) or len(part) > 100
+                for part in Path(selected).parts):
+            selected = "[custom executable path withheld]"
+        executables[name] = {"status": "present", "selected_executable": selected}
+    profile = home / ".hermes/profiles/astra-ultra"
+    binding = profile / "workbench-subscription.json"
+    auth = {"status": "not_configured", "refresh_performed": False}
+    if binding.exists():
+        from .codex_token import borrow_token, TokenError
+        try:
+            auth = borrow_token(binding, check=True, env=env)
+        except TokenError as error:
+            auth = {"status": str(error), "refresh_performed": False}
+    return {"executables": executables, "astra_ultra_profile_present": profile.is_dir(),
+            "subscription_binding": auth,
+            "limitations": ["Native version probes are opt-in through explain because Hermes can check for updates.",
+                            "Profile configuration, tool readiness and actual request effort are not inspected here."]}
+
+
 def diagnose(*, project: Path | None = None, home: Path | None = None,
              env: dict | None = None, probe: bool = False) -> dict:
     """Collect allowlisted metadata without authentication changes or inference."""
@@ -371,6 +404,7 @@ def diagnose(*, project: Path | None = None, home: Path | None = None,
         "codex": codex,
         "claude": _claude(home, project, environment),
         "astra": _astra(home, environment, token, now, probe),
+        "hermes": _hermes(home, environment),
     }
 
 
@@ -381,6 +415,13 @@ def format_report(report) -> str:
         executable = version.get("selected_executable")
         lines.append(f"Observed {name}: {version.get('version') or version.get('status', 'unknown')}" +
                      (f" — {executable}" if executable else ""))
+    hermes = report.get("hermes", {})
+    for name, entry in hermes.get("executables", {}).items():
+        lines.append(f"Selected {name}: {entry.get('selected_executable') or entry.get('status')}")
+    if hermes.get("astra_ultra_profile_present"):
+        lines.append("Hermes Astra Ultra subscription binding: " +
+                     hermes.get("subscription_binding", {}).get("status", "unknown") +
+                     " (local metadata only; no refresh)")
     auth = report.get("codex", {}).get("authentication", {})
     freshness = auth.get("access_token", {})
     expiry = f"; expires {freshness['expires_at']}" if "expires_at" in freshness else ""

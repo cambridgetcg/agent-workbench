@@ -1,6 +1,6 @@
 # Agent Workbench
 
-Local interoperability tools for Codex and Claude Code. Python 3.11+ standard
+Local interoperability tools for Codex, Claude Code and Hermes. Python 3.11+ standard
 library only. Preserve existing native authentication and permission controls.
 
 Never print or export credentials, raw environment variables, raw provider

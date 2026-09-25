@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""Launch the configured Astra Ultra Hermes profile with native Hermes controls."""
+import os
+import shutil
+import sys
+
+executable = shutil.which("hermes")
+if executable is None:
+    sys.exit("hermes-astra-ultra: Hermes is not on PATH. See the Hermes integration guide.")
+
+os.execv(executable, [executable, "--profile", "astra-ultra", "--model", "gpt-6-astra",
+                      "--provider", "chatgpt-subscription", "--reasoning", "ultra", *sys.argv[1:]])

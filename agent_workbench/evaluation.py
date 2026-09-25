@@ -181,7 +181,7 @@ def evaluation_capabilities(executable="claude"):
         raise ValueError("Claude evaluation executable was not found.")
     selected = str(Path(selected).resolve(strict=True))
     environment = {**os.environ, "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1"}
-    grace = 12 if Path(selected).name in {"claude-astra", "claude-astra-ultra"} else 1
+    grace = 12 if Path(selected).name in {"claude-astra", "claude-astra-ultra", "hermes", "hermes-astra-ultra"} else 1
     version_result = run_owned([selected, "--version"], env=environment, timeout=5,
                                output_limit=100_000, termination_grace=grace)
     if version_result["outcome"] != "exited":
@@ -375,7 +375,7 @@ def run_evaluation(plan, *, state_root=None):
     observed = run_owned(argv, cwd=checked["plugin"], env=environment, timeout=options["timeout_seconds"],
                          output_limit=MAX_REPORT_BYTES, stdout_path=log_path,
                          stderr_path=directory / "native-error.log", capture_output=False,
-                         termination_grace=12 if Path(capabilities["executable"]).name in {"claude-astra", "claude-astra-ultra"} else 1)
+                         termination_grace=12 if Path(capabilities["executable"]).name in {"claude-astra", "claude-astra-ultra", "hermes", "hermes-astra-ultra"} else 1)
     returncode = observed["exit_code"]
     execution = ("completed" if returncode == 0 else "native_failed") if observed["outcome"] == "exited" else observed["outcome"]
     try:

@@ -413,6 +413,44 @@ class NativeNormalizationTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", json.dumps(events))
         self.assertEqual(events[-1]["usage"]["input_tokens"], 12)
 
+    def test_hermes_public_events_keep_only_fixed_metadata_and_usage(self):
+        frames = [
+            {"type": "system", "subtype": "init", "session_id": "20260925_native", "model": "PRIVATE"},
+            {"type": "text", "text": "PRIVATE answer"},
+            {"type": "reasoning", "text": "PRIVATE reasoning"},
+            {"type": "tool_use", "name": "terminal", "tool_call_id": "tool-1", "input": {"command": "PRIVATE"}},
+            {"type": "tool_result", "name": "terminal", "tool_call_id": "tool-1", "output": "PRIVATE", "is_error": True},
+            {"type": "result", "session_id": "rotated-session", "exit_code": 0, "text": "PRIVATE answer", "duration_ms": 25,
+             "tokens": {"input": 5, "output": 2, "total": 7, "cache_read": 1, "cache_write": 0, "reasoning": "PRIVATE"}},
+        ]
+        for harness in ("hermes", "hermes-astra-ultra"):
+            events = [event for frame in frames for event in normalize_event(frame, harness)]
+            self.assertEqual(len(events), 5)
+            self.assertEqual(events[0], {"kind": "native_session", "session_id": "20260925_native"})
+            self.assertEqual(events[2]["tool"], "Bash")
+            self.assertEqual(events[3]["status"], "failed")
+            self.assertEqual(events[4]["status"], "succeeded")
+            self.assertEqual(events[4]["session_id"], "rotated-session")
+            self.assertEqual(events[4]["usage"], {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7,
+                                                 "cache_read_input_tokens": 1, "cache_creation_input_tokens": 0})
+            self.assertNotIn("PRIVATE", json.dumps(events))
+
+    def test_hermes_malformed_results_and_untrusted_metadata_do_not_claim_success(self):
+        base = {"type": "result", "session_id": "native-session", "exit_code": 0, "text": "PRIVATE"}
+        for fields in ({"exit_code": False}, {"exit_code": "0"}, {"exit_code": 1}, {"text": []},
+                       {"error": "PRIVATE"}, {"error": {}}, {"session_id": "/PRIVATE/path"},
+                       {"session_id": "sk-PRIVATEsecret1234"}):
+            with self.subTest(fields=fields):
+                event = normalize_event({**base, **fields}, "hermes")[0]
+                self.assertEqual(event["status"], "failed")
+                self.assertNotIn("PRIVATE", json.dumps(event))
+        event = normalize_event({**base, "duration_ms": True,
+                                 "tokens": {"input": True, "output": -1, "total": 2**54}}, "hermes")[0]
+        self.assertNotIn("duration_ms", event)
+        self.assertNotIn("usage", event)
+        event = normalize_event({"type": "tool_use", "name": "PRIVATE_plugin", "tool_call_id": "sk-PRIVATEsecret1234", "input": "PRIVATE"}, "hermes")[0]
+        self.assertEqual(event, {"kind": "native_tool", "status": "started"})
+
     def test_invalid_nested_shapes_do_not_leak_or_raise(self):
         for frame in ({"type": []}, {"type": "system", "subtype": []},
                       {"type": "assistant", "message": []},
@@ -421,6 +459,7 @@ class NativeNormalizationTests(unittest.TestCase):
             with self.subTest(frame=frame):
                 self.assertEqual(normalize_event(frame), [])
                 self.assertEqual(normalize_event(frame, "codex"), [])
+                self.assertEqual(normalize_event(frame, "hermes"), [])
 
 
 if __name__ == "__main__":

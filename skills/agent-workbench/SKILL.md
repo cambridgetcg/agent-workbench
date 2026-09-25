@@ -1,6 +1,6 @@
 ---
 name: agent-workbench
-description: Diagnose Codex, Claude Code or Astra configuration; run and control saved workflows; compare local plugin evaluations; or transfer explicit work handoffs. Use for these operations, not ordinary coding tasks.
+description: Diagnose Codex, Claude Code, Hermes or Astra configuration; run and control saved workflows; compare local plugin evaluations; or transfer explicit work handoffs. Use for these operations, not ordinary coding tasks.
 ---
 
 Use the shared `agent-workbench` CLI. If it is not on PATH, execute the bundled
@@ -25,6 +25,13 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   Use `plan RUN_ID` to inspect task definitions, notes and imported provenance.
   Run references accept unique prefixes of at least eight characters;
   `list --project PATH` finds runs for a project.
+- Hermes tasks use `hermes` or `hermes-astra-ultra` with the native process
+  adapter. They require a Hermes version advertising `chat --query-file` and
+  `--format stream-json`. The Ultra profile uses native Hermes tools and sends
+  Astra's supported `max` wire effort. Hermes does not inherit Claude Ultracode.
+  Use the token helper's `--check` interface for auth diagnostics; its normal
+  stdout is a private credential protocol and must never be run in a terminal
+  or included in logs, prompts or reports. See the [Hermes integration guide](../../docs/hermes.md).
 - Runs are serial by default; `run --jobs N` allows 1–16 workers subject to
   dependencies and checkout ownership. `shared` writers serialize; declared
   `read-only` tasks may overlap but are not sandboxed. `worktree` gives each
@@ -75,6 +82,6 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   frontend; do not change global Claude settings or upgrade the user's runtime
   merely to display Workbench status.
 
-Durable state is shared locally between both harnesses. Native conversation
+Durable state is shared locally across the harnesses. Native conversation
 histories and hidden reasoning are not transferred. Rest and stopped runs need
 no justification; preserve a practical handoff when useful.

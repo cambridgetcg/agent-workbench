@@ -338,7 +338,7 @@ def reconcile_claims(store, run_id, *, terminate=False):
                 if claim.get("run_id") != run_id:
                     raise ValueError("Checkout ownership index names another run")
                 task = next((row for row in state["tasks"] if row["id"] == claim.get("task_id")), {})
-                grace = 12 if task.get("harness") in {"astra", "astra-ultra"} else 0.7
+                grace = 12 if task.get("harness") in {"astra", "astra-ultra", "hermes", "hermes-astra-ultra"} else 0.7
                 for process in claim["processes"]:
                     group = process.get("process_group")
                     if not _group_running(group):

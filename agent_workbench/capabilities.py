@@ -23,7 +23,8 @@ _PROBE_LIMIT = 262_144
 _PROBE_TIMEOUT_SECONDS = 3
 _MAX_ROWS = 100
 _EXECUTABLES = {"codex": "codex", "claude": "claude", "astra": "claude-astra",
-                "astra-ultra": "claude-astra-ultra"}
+                "astra-ultra": "claude-astra-ultra", "hermes": "hermes",
+                "hermes-astra-ultra": "hermes-astra-ultra"}
 _SEMVER = re.compile(r"(?<![\w.])v?(\d{1,4}\.\d{1,4}\.\d{1,4}(?:\.\d{1,4})?)(?![\w.])")
 _MODEL = re.compile(r"(?:(?:gpt-[0-9]|claude-)[A-Za-z0-9._():-]*|(?:o[134]|opus|opusplan|sonnet|haiku|fable|default)(?:-[A-Za-z0-9._():-]+)?)(?:\[(?:1m|200k)\])?\Z")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@/-]{0,119}\Z")
@@ -37,7 +38,8 @@ _HOOK_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRe
 _FLAGS = {"--output-format", "--input-format", "--resume", "--continue", "--worktree", "--bg",
           "--background", "--include-hook-events", "--forward-subagent-text", "--safe-mode", "--bare",
           "--setting-sources", "--settings", "--plugin-dir", "--effort", "--model", "--json",
-          "--no-daemon", "--sandbox", "--ask-for-approval", "--replay-user-messages"}
+          "--no-daemon", "--sandbox", "--ask-for-approval", "--replay-user-messages",
+          "--format", "--query-file", "--reasoning"}
 
 
 def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
@@ -159,7 +161,7 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
     """Resolve an executable and record selected, sanitized capability evidence.
 
     No command task or Astra wrapper is invoked during inspection. Known native
-    CLIs receive only --version and --help (Codex also exec --help). The returned
+    CLIs receive only --version and --help (Codex exec / Hermes chat help too). The returned
     ``executable`` is the absolute selected entry point for a later launch.
     Wrappers still resolve their own children; the nested ``native`` record
     describes the current PATH candidate, not a guaranteed wrapper launch.
@@ -193,18 +195,21 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
         result["configuration"] = {"scope": "not_applicable", "reason": "Command environment and arguments are not inspected."}
         return result
     native = selected
-    wrapper = harness in {"astra", "astra-ultra"}
+    hermes = harness in {"hermes", "hermes-astra-ultra"}
+    wrapper = harness in {"astra", "astra-ultra", "hermes-astra-ultra"}
     if wrapper:
-        native_candidates = _paths("claude", project, env)
+        native_name = "hermes" if hermes else "claude"
+        native_candidates = _paths(native_name, project, env)
         native = native_candidates[0] if native_candidates else None
         result["native"] = {"executable": str(native) if native else None,
                             "display_executable": _display(native, home, project) if native else None,
                             "evidence": "PATH child candidate; wrapper forwarding not runtime verified",
                             "candidate_count": len(native_candidates)}
         if len({str(path.resolve()) for path in native_candidates}) > 1:
-            warnings.append("Multiple Claude installations are on PATH; the wrapper's native child can vary between launch environments.")
-        warnings.append("Astra wrapper was not executed during discovery; settings composition and proxy lifetime remain adapter boundaries.")
+            warnings.append(f"Multiple {native_name} installations are on PATH; the wrapper's native child can vary between launch environments.")
+        warnings.append("Astra wrapper was not executed during discovery; settings composition and native child lifetime remain adapter boundaries.")
     version_info, help_info, help_text = {"status": "unavailable", "version": None}, {"status": "unavailable"}, ""
+    chat_text = ""
     if selected is not None and native is not None:
         version_info, text = _probe(native, ["--version"], project, env)
         match = _SEMVER.search(text)
@@ -220,6 +225,13 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
             help_info["exec_status"] = exec_info["status"]
             if exec_info["status"] == "reported":
                 help_text += "\n" + exec_text
+        if hermes and help_info["status"] != "interrupted":
+            # These flags are subcommand-specific; top-level help cannot prove
+            # that this installed version supports the native JSON adapter.
+            chat_info, chat_text = _probe(native, ["chat", "--help"], project, env)
+            help_info["chat_status"] = chat_info["status"]
+            if chat_info["status"] == "reported":
+                help_text += "\n" + chat_text
     flags = {flag for flag in _FLAGS if re.search(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", help_text)}
     help_info["flags"] = sorted(flags)
     help_info["stream_json_advertised"] = "stream-json" in help_text
@@ -233,6 +245,21 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
         caps["live_input"] = _capability("unavailable", "Workbench exec adapter is single-input; no duplex protocol configured")
         caps["interrupt"] = _capability("unavailable", "Workbench exec adapter has process stop only, not acknowledged turn interruption")
         caps["native_agents_md"] = _capability("unverified", "Native instruction discovery is not runtime observed")
+    elif hermes:
+        chat_help = {"status": help_info.get("chat_status", "unavailable")}
+        chat_flags = {flag for flag in _FLAGS if re.search(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", chat_text)}
+        caps["structured_events"] = _help_capability(chat_help, chat_flags, "--format", "--query-file")
+        if "stream-json" not in chat_text:
+            caps["structured_events"] = _capability("unverified", "stream-json format not advertised by inspected chat help")
+        caps["reasoning"] = _help_capability(chat_help, chat_flags, "--reasoning")
+        caps["resume"] = _help_capability(chat_help, chat_flags, "--resume")
+        caps["live_input"] = _capability("unavailable", "Workbench Hermes adapter is single-input; no duplex protocol configured")
+        caps["interrupt"] = _capability("unavailable", "Workbench Hermes adapter has process stop only, not acknowledged turn interruption")
+        caps["native_agents_md"] = _capability("unverified", "Native instruction discovery is not runtime observed")
+        if wrapper:
+            for key in ("structured_events", "reasoning", "resume"):
+                if caps[key]["status"] == "supported":
+                    caps[key] = _capability("unverified", "Native child advertises the interface; wrapper forwarding and lifecycle are not verified")
     else:
         caps["structured_events"] = _help_capability(help_info, flags, "--output-format")
         caps["stream_input"] = _help_capability(help_info, flags, "--input-format")
@@ -255,8 +282,13 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
             for key in ("structured_events", "stream_input", "resume", "worktree", "hook_events", "safe_mode", "background"):
                 if caps[key]["status"] == "supported":
                     caps[key] = _capability("unverified", "Native child advertises the interface; wrapper forwarding and lifecycle are not verified")
-    result["configuration"] = explain_configuration(project, home=home, env=env)
-    if harness != "codex" and caps["native_agents_md"]["status"] == "unavailable":
+    if hermes:
+        result["configuration"] = {"scope": "not_inspected", "hermes": {
+            "status": "not_inspected",
+            "reason": "Profile and provider configuration are not evaluated; this Hermes launch probe does not read Codex or Claude configuration."}}
+    else:
+        result["configuration"] = explain_configuration(project, home=home, env=env)
+    if not hermes and harness != "codex" and caps["native_agents_md"]["status"] == "unavailable":
         if any(row["name"] == "AGENTS.md" and row["status"] == "present"
                for row in result["configuration"]["instructions"]["files"]):
             warnings.append("AGENTS.md was discovered but this native version predates documented automatic loading; imports were not evaluated.")

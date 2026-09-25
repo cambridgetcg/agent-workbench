@@ -121,6 +121,44 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(profile["capabilities"]["live_input"]["status"], "unavailable")
         self.assertNotIn("private-task-text", json.dumps(profile))
 
+    def test_hermes_chat_help_and_process_capabilities_are_distinct(self):
+        native = self.executable(name="hermes")
+        self.version = "vgit.59004a6 (2026.9.24) PRIVATE_VERSION"
+        self.help = "--query-file --format stream-json --reasoning --resume"
+        with patch.object(capabilities, "explain_configuration", side_effect=AssertionError("No unrelated configuration reads")):
+            profile = self.inspect({"harness": "hermes", "effort": "max"})
+        self.assertEqual(profile["executable"], str(native))
+        self.assertEqual(profile["version"]["version"], "2026.9.24")
+        self.assertEqual([call[0][1:] for call in self.calls], [["--version"], ["--help"], ["chat", "--help"]])
+        self.assertEqual(profile["help"]["chat_status"], "reported")
+        self.assertEqual(profile["capabilities"]["structured_events"]["status"], "supported")
+        self.assertEqual(profile["capabilities"]["reasoning"]["status"], "supported")
+        self.assertEqual(profile["capabilities"]["live_input"]["status"], "unavailable")
+        self.assertEqual(profile["capabilities"]["interrupt"]["status"], "unavailable")
+        self.assertEqual(profile["configuration"]["hermes"]["status"], "not_inspected")
+        self.assertNotIn("PRIVATE_VERSION", json.dumps(profile))
+
+    def test_hermes_astra_inspects_native_child_without_executing_wrapper(self):
+        wrapper = self.executable(name="hermes-astra-ultra")
+        native = self.executable(name="hermes")
+        self.help = "--query-file --format stream-json --reasoning --resume"
+        profile = self.inspect({"harness": "hermes-astra-ultra"})
+        self.assertEqual(profile["executable"], str(wrapper))
+        self.assertEqual(profile["native"]["executable"], str(native))
+        self.assertTrue(all(call[0][0] == str(native) for call in self.calls))
+        self.assertEqual(profile["capabilities"]["structured_events"]["status"], "unverified")
+        self.assertEqual(profile["capabilities"]["live_input"]["status"], "unavailable")
+
+    def test_hermes_top_level_flags_do_not_prove_chat_protocol(self):
+        self.executable(name="hermes")
+        def probe(argv, **kwargs):
+            text = "--query-file --format stream-json --reasoning" if argv[1:] == ["--help"] else "Older chat help: -q -Q"
+            return {"outcome": "exited", "exit_code": 0, "stdout": text, "stderr": "", "signal": None}
+        self.run_mock.side_effect = probe
+        profile = self.inspect({"harness": "hermes"})
+        self.assertEqual(profile["capabilities"]["structured_events"]["status"], "unverified")
+        self.assertEqual(profile["capabilities"]["reasoning"]["status"], "unverified")
+
     def test_missing_executables_and_failed_probes_are_honest(self):
         missing = self.inspect()
         self.assertIsNone(missing["executable"])

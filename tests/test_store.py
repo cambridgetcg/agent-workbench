@@ -54,6 +54,24 @@ class StoreTests(unittest.TestCase):
             with self.subTest(task=task), self.assertRaises(ValueError):
                 validate_manifest({**self.manifest, "tasks": [task]})
 
+    def test_hermes_native_and_astra_manifest_roundtrip(self):
+        tasks = [{"id": "native", "harness": "hermes", "prompt": "Inspect", "model": "custom/provider-model", "effort": "max"},
+                 {"id": "astra", "harness": "hermes-astra-ultra", "prompt": "Verify", "model": "gpt-6-astra",
+                  "effort": "ultra", "depends_on": ["native"], "adapter": "process", "workspace": "worktree"}]
+        state = self.store.create({**self.manifest, "tasks": tasks}, self.root)
+        saved = self.store.read(state["id"])
+        for expected, actual in zip(tasks, saved["tasks"]):
+            for key, value in expected.items():
+                self.assertEqual(actual[key], value)
+
+    def test_hermes_does_not_accept_claude_workflow_or_duplex_settings(self):
+        for harness in ("hermes", "hermes-astra-ultra"):
+            for fields in ({"effort": "ultracode"}, {"adapter": "duplex"}):
+                with self.subTest(harness=harness, fields=fields), self.assertRaises(ValueError):
+                    validate_manifest({**self.manifest, "tasks": [{"id": "native", "harness": harness, "prompt": "Inspect", **fields}]})
+        with self.assertRaisesRegex(ValueError, "gpt-6-astra only"):
+            validate_manifest({**self.manifest, "tasks": [{"id": "native", "harness": "hermes-astra-ultra", "prompt": "Inspect", "model": "other"}]})
+
     def test_update_failure_does_not_save(self):
         state = self.store.create(self.manifest, self.root)
         def fail(s):

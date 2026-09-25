@@ -356,20 +356,22 @@ run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
         self.assertFalse(workspaces._group_running(helper_group))
         self.assertTrue(checkout.is_dir())
 
-    def test_ledger_only_astra_recovery_preserves_proxy_cleanup_grace(self):
+    def test_ledger_only_native_recovery_preserves_owned_cleanup_grace(self):
         from agent_workbench.runner import _controller_lock
-        task = {"id": "work", "harness": "astra", "prompt": "fixture; never executed"}
-        run_id = self.store.create({"version": 1, "name": "Astra ownership fixture", "goal": "Verify recorded cleanup grace", "tasks": [task]}, self.project)["id"]
-        with _controller_lock(self.store, run_id):
-            with workspaces.lease(self.store, self.project, "shared", run_id=run_id, task_id="work") as owner:
-                owner._change(lambda claim: claim["processes"].append({"pid": 123456789,
-                    "process_group": 123456789, "process_identity": "matching-start"}))
-                with patch.object(workspaces, "_group_running", side_effect=[True, False]), \
-                        patch("agent_workbench.runner._process_identity", return_value="matching-start"), \
-                        patch("agent_workbench.runner._terminate_group") as terminate:
-                    workspaces.reconcile_claims(self.store, run_id, terminate=True)
-                terminate.assert_called_once_with(123456789, grace_seconds=12)
-                self.assertEqual(self.store.read(run_id)["checkout_claims"], [])
+        for harness in ("astra", "hermes", "hermes-astra-ultra"):
+            with self.subTest(harness=harness):
+                task = {"id": "work", "harness": harness, "prompt": "fixture; never executed"}
+                run_id = self.store.create({"version": 1, "name": "Native ownership fixture", "goal": "Verify recorded cleanup grace", "tasks": [task]}, self.project)["id"]
+                with _controller_lock(self.store, run_id):
+                    with workspaces.lease(self.store, self.project, "shared", run_id=run_id, task_id="work") as owner:
+                        owner._change(lambda claim: claim["processes"].append({"pid": 123456789,
+                            "process_group": 123456789, "process_identity": "matching-start"}))
+                        with patch.object(workspaces, "_group_running", side_effect=[True, False]), \
+                                patch("agent_workbench.runner._process_identity", return_value="matching-start"), \
+                                patch("agent_workbench.runner._terminate_group") as terminate:
+                            workspaces.reconcile_claims(self.store, run_id, terminate=True)
+                        terminate.assert_called_once_with(123456789, grace_seconds=12)
+                        self.assertEqual(self.store.read(run_id)["checkout_claims"], [])
 
 
 if __name__ == "__main__":
