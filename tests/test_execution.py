@@ -19,7 +19,7 @@ from agent_workbench.workspaces import remove_clean
 
 
 FAKE_NATIVE = r'''
-import json, os, pathlib, signal, sys, time
+import json, os, pathlib, signal, subprocess, sys, time
 if "--version" in sys.argv:
     print("Claude Code 2.1.282")
     sys.exit(0)
@@ -46,9 +46,14 @@ def public_events():
               {"type": "thinking", "thinking": "PRIVATE_THINKING_SENTINEL"},
               {"type": "tool_use", "id": "tool-17", "name": "Bash", "input": {"command": "PRIVATE_COMMAND_SENTINEL"}},
               {"type": "text", "text": "PRIVATE_TEXT_SENTINEL sk-fixturesecret12345"}]}})
-if mode == "process":
+if mode in ("process", "process-child"):
     save({"prompt": sys.stdin.read(), "cwd": os.getcwd()})
     public_events()
+    if mode == "process-child":
+        child = subprocess.Popen([sys.executable, "-c", "import os,time\nwhile True:\n os.write(1,b'{\"type\":\"keepalive\"}\\n');time.sleep(.01)"])
+        save({"child_pid": child.pid})
+        result(1)
+        sys.exit(0)
     gate = pathlib.Path(os.environ["WORKBENCH_TEST_GATE"])
     while not gate.exists():
         time.sleep(0.01)
@@ -91,6 +96,17 @@ for line in sys.stdin:
               "message": {"role": "user", "content": "PRIVATE_ECHO_SENTINEL"}})
         if users == 1:
             public_events()
+        if mode == "backpressure":
+            if users == 1:
+                gate = pathlib.Path(os.environ["WORKBENCH_TEST_GATE"])
+                while not gate.exists():
+                    time.sleep(.01)
+            # More than a pipe buffer of output before reading the next input.
+            emit({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "private" * 32000}]}})
+            result(users)
+            if users == 21:
+                break
+            continue
         if mode in ("permission", "unknown"):
             request = {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "PRIVATE_PERMISSION_SENTINEL"}} if mode == "permission" else {"subtype": "future_callback", "private": "PRIVATE_CALLBACK_SENTINEL"}
             emit({"type": "control_request", "request_id": "callback-1", "request": request})
@@ -119,6 +135,9 @@ for line in sys.stdin:
         if mode == "active-task-eof":
             emit({"type": "system", "subtype": "task_started", "task_id": "unfinished-agent", "task_type": "local_agent"})
         result(1)
+        if mode == "truncated-final":
+            sys.stdout.write('{"type":"keepalive"}')
+            sys.stdout.flush()
         if mode == "closed":
             continue
         break
@@ -296,6 +315,55 @@ class ExecutionIntegrationTests(unittest.TestCase):
         results = [event for event in state["events"] if event.get("kind") == "native_turn"]
         self.assertEqual(len(results), 1)
 
+    def test_large_live_input_batch_drains_stdout_while_writing(self):
+        os.environ["WORKBENCH_TEST_MODE"] = "backpressure"
+        run_id = self.create(timeout_seconds=12)
+        worker, outcome = self.start(run_id)
+        self.wait(lambda: self.initialized(run_id), "duplex initialization")
+        for index in range(20):
+            request_native(self.store, run_id, "work", "input", "x" * 16000, "pressure-" + str(index))
+        self.gate.touch()
+        state = self.finish(worker, outcome)
+        self.assertEqual(state["status"], "succeeded", state["tasks"][0].get("result"))
+        self.assertEqual(len(state["control"]["native_requests"]), 20)
+        self.assertTrue(all(request["status"] == "acknowledged" for request in state["control"]["native_requests"]))
+        self.assertEqual(sum(frame.get("type") == "user" for frame in self.frames()), 21)
+
+    def test_native_descendants_stop_before_final_event_drain(self):
+        from agent_workbench.bridge import EventTail
+        os.environ["WORKBENCH_TEST_MODE"] = "process-child"
+        original = EventTail.poll
+        final_checks = []
+        def checked(tail, final=False):
+            if final:
+                pid = next(frame["child_pid"] for frame in self.frames() if "child_pid" in frame)
+                result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True)
+                alive = result.returncode == 0 and result.stdout.strip() and not result.stdout.strip().startswith("Z")
+                self.assertFalse(alive, "Inherited stdout writer must stop before final draining")
+                final_checks.append(True)
+            return original(tail, final=final)
+        with patch.object(EventTail, "poll", checked):
+            state = run_workflow(self.store, self.create(adapter="process"), timeout_seconds=5)
+        self.assertEqual(state["status"], "succeeded", state["tasks"][0].get("result"))
+        self.assertTrue(final_checks)
+
+    def test_final_event_drain_honors_new_stop_request(self):
+        from agent_workbench.bridge import EventTail
+        os.environ["WORKBENCH_TEST_MODE"] = "process-child"
+        run_id = self.create(adapter="process")
+        original = EventTail.poll
+        final_polls = []
+        def still_growing(tail, final=False):
+            if final:
+                final_polls.append(True)
+                request_control(self.store, run_id, "stop")
+                return True
+            return original(tail, final=final)
+        with patch.object(EventTail, "poll", still_growing):
+            state = run_workflow(self.store, run_id, timeout_seconds=5)
+        self.assertEqual(state["status"], "stopped")
+        self.assertEqual(len(final_polls), 1)
+
     def test_initialize_refusal_never_sends_the_task_prompt(self):
         os.environ["WORKBENCH_TEST_MODE"] = "refuse"
         state = run_workflow(self.store, self.create(), timeout_seconds=5)
@@ -344,6 +412,13 @@ class ExecutionIntegrationTests(unittest.TestCase):
         self.assertEqual(state["tasks"][0]["result"]["exit_code"], 0)
         self.assertEqual(state["status"], "failed")
         self.assertEqual(state["tasks"][0]["result"]["failure_kind"], "native_activity_completion_unverified")
+
+    def test_incomplete_final_frame_cannot_record_success(self):
+        os.environ["WORKBENCH_TEST_MODE"] = "truncated-final"
+        state = run_workflow(self.store, self.create(), timeout_seconds=5)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["tasks"][0]["result"]["failure_kind"], "incomplete_json_frame")
+        self.assertTrue(any(event.get("code") == "incomplete_json_frame" for event in state["events"]))
 
     def test_acknowledged_interrupt_precedes_unanswered_input_at_eof(self):
         os.environ["WORKBENCH_TEST_MODE"] = "interrupt-partial"
@@ -402,6 +477,17 @@ class ExecutionIntegrationTests(unittest.TestCase):
         self.assertEqual(state["status"], "failed")
         self.assertEqual(attempt["failure_kind"], "task_timeout")
         self.assertIsNone(attempt["pid"])
+        self.assertEqual(self.frames(), [])
+
+    def test_checkout_contention_after_attempt_creation_finishes_that_attempt(self):
+        from agent_workbench.workspaces import WorkspaceBusy
+        with patch("agent_workbench.workspaces.prepare", side_effect=WorkspaceBusy("fixture contention")):
+            state = run_workflow(self.store, self.create(workspace="worktree"), timeout_seconds=5)
+        self.assertEqual(state["status"], "failed")
+        task = state["tasks"][0]
+        self.assertEqual(task["status"], "failed")
+        self.assertEqual(len(task["attempts"]), 1)
+        self.assertEqual(task["attempts"][0]["failure_kind"], "workspace_busy_after_attempt")
         self.assertEqual(self.frames(), [])
 
     def test_recovery_closes_delivery_receipts_without_replaying(self):

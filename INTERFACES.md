@@ -82,8 +82,14 @@ not just exit code zero with a JSON error. Command success is exit code zero.
 
 - `compatible(task, active_tasks)` permits read-only/read-only overlap and
   independent worktrees; shared writers serialize with shared readers/writers.
-- `lease(store, project, mode)` holds a shared/exclusive checkout lock for a task.
+- `lease(store, project, mode, *, run_id=None, task_id=None)` yields checkout
+  ownership with `attach_attempt`, `spawn` and `release_process` operations.
+  Workflow claims persist beyond controller death. A private startup gate waits
+  for durable process identity before executing the native command.
   Coordination covers controllers sharing a state root, not unrelated processes.
+- `reconcile_claims(store, run_id, *, terminate=False)` runs under that run's
+  controller lock. Explicit recovery may stop matching recorded process groups;
+  unverified surviving groups keep the checkout unavailable. No work is replayed.
 - `prepare(store, run_id, task, attempt_id, project) -> dict` returns attempt
   workspace metadata. Worktrees are detached committed-HEAD snapshots; the
   relative project path is preserved and uncommitted files are not copied.
@@ -92,7 +98,8 @@ not just exit code zero with a JSON error. Command success is exit code zero.
 - `workspace_view(state) -> dict` lists recorded paths, ownership and retention.
 - `remove_clean(store, run_id, task_id, attempt_id) -> dict` takes the controller
   lock and removes only an inactive, unchanged, owned worktree at its recorded
-  base commit. It refuses dirty trees, new commits, incomplete preparation and
+  base commit while also holding the checkout's exclusive lease, including
+  against other runs using a retained worktree. It refuses dirty trees, new commits, incomplete preparation and
   ownership mismatches. Git helpers use bounded output and owned process groups.
 
 Read-only is a declaration, not OS enforcement. Worktrees are retained by default.
@@ -152,6 +159,10 @@ completion receipts remain unverified rather than counting results as inputs.
 The duplex child receives `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`; observed
 native idle/running state and queue counts constrain draining. This per-process
 observation setting does not replace prompts, policy or global configuration.
+Writes multiplex stdin readiness with stdout draining and control checks. A
+bounded receive backlog is parsed between complete frames so callback responses
+cannot interleave with an outgoing JSON frame. Final process-event draining
+stops inherited writers first and continues checking run boundaries.
 
 ## Doctor API (`doctor.py`)
 
@@ -185,6 +196,12 @@ Plugin source/cache consistency compares version metadata, not byte identity.
 and hashes their bytes. Approximate tokens use ceil(characters/4), not a tokenizer
 or measured loaded context; external components and dynamic context are omitted.
 
+`plugin_payload(plugin) -> dict` separately fingerprints local code, guides,
+fixtures and dot-configuration, including executable mode bits. It excludes
+listed VCS/cache/result paths and rejects symlinks; external dependencies and
+runtime configuration remain unverified. Code or guide changes invalidate a
+saved evaluation plan even when its estimated authoring-token inventory matches.
+
 `evaluation_plan(plugin, *, executable='claude', runs=3, case=None, max_cases=20,
 timeout_seconds=900, max_cost_usd=5, model=None, judge_model=None, allow_tools=(),
 trust_plugin=False) -> dict` inspects a conventional `evals/` suite and native
@@ -203,6 +220,14 @@ overrun by one agent run and are not hard account-charge guarantees.
 returns allowlisted numeric grader outcomes without prompts/traces/evidence text.
 Partial, errored, unbalanced or incompletely graded runs are ineligible for
 comparison. Missing measurements stay null; scores do not prove causation.
+
+## Owned helper processes (`processes.py`)
+
+`run_owned` captures bounded file-backed output and cleans process groups on
+normal exit, timeout and interruption. Main-thread calls temporarily capture
+SIGINT/SIGTERM and restore previous handlers after cleanup. Worker calls depend
+on their controller's signal handling. Inside a checkout lease, helper launches
+also use its durable process gate; no helper silently weakens checkout ownership.
 
 ## Optional native mod checks (`mods.py`)
 

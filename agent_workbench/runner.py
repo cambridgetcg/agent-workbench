@@ -6,7 +6,8 @@ interruption, and a separate explicit retry is required.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
+from collections import deque
 import fcntl
 import json
 import math
@@ -459,44 +460,74 @@ def _duplex_pump(store, run_id, task, attempt_id, process, prompt, stdout, journ
     from .bridge import claim_requests
     os.set_blocking(process.stdin.fileno(), False)
     os.set_blocking(process.stdout.fileno(), False)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "read")
+    received = deque()
+    received_bytes = 0
+    settle_since = None
+    def receive():
+        nonlocal received_bytes, settle_since
+        try:
+            chunk = os.read(process.stdout.fileno(), 65536)
+        except BlockingIOError:
+            return
+        if not chunk:
+            selector.unregister(process.stdout)
+            return
+        stdout.write(chunk)
+        stdout.flush()
+        received.append(chunk)
+        received_bytes += len(chunk)
+        settle_since = None
+        if received_bytes > 4 * 2_097_152:
+            raise OSError("Native receive backlog limit reached")
+
+    def feed_received():
+        nonlocal received_bytes
+        while received and not session.protocol_error:
+            chunk = received.popleft()
+            received_bytes -= len(chunk)
+            session.feed(chunk)
+
     def send(payload):
         until = min(deadline, task_deadline, time.monotonic() + 5)
         view = memoryview(payload)
-        while view:
-            if time.monotonic() >= until or interrupted["signal"] is not None or interrupted.get("cancel"):
-                raise TimeoutError("Native input write did not complete")
-            try:
-                count = os.write(process.stdin.fileno(), view)
-                view = view[count:]
-            except BlockingIOError:
-                time.sleep(POLL_SECONDS)
+        selector.register(process.stdin, selectors.EVENT_WRITE, "write")
+        try:
+            while view:
+                boundary, _ = _boundary(store, run_id, deadline, task_deadline, interrupted)
+                if boundary or time.monotonic() >= until:
+                    raise TimeoutError("Native input write did not complete")
+                for key, _ in selector.select(POLL_SECONDS):
+                    if key.data == "read":
+                        # Drain the other pipe while blocked on stdin. Parse
+                        # after this complete frame, preventing a callback's
+                        # response from interleaving with a partial JSON write.
+                        receive()
+                    elif view:
+                        try:
+                            count = os.write(process.stdin.fileno(), view[:65536])
+                            view = view[count:]
+                        except BlockingIOError:
+                            pass
+        finally:
+            selector.unregister(process.stdin)
     session = NativeSession(send, journal.emit)
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
     initial_sent = False
     initialization_deadline = min(deadline, task_deadline, time.monotonic() + 20)
-    settle_since = None
     input_closed = False
     interrupted_turn = False
     drain_evidence = None
     try:
         session.initialize(attempt_id + "-initialize")
+        feed_received()
         while process.poll() is None or selector.get_map():
             reason, failure = _boundary(store, run_id, deadline, task_deadline, interrupted)
             if reason:
                 return reason, failure
             for key, _ in selector.select(POLL_SECONDS):
-                try:
-                    chunk = os.read(key.fd, 65536)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    selector.unregister(key.fileobj)
-                    continue
-                stdout.write(chunk)
-                stdout.flush()
-                session.feed(chunk)
-                settle_since = None
+                receive()
+                feed_received()
             if session.protocol_error:
                 return "failed", session.protocol_error
             reason, failure = _boundary(store, run_id, deadline, task_deadline, interrupted)
@@ -508,6 +539,7 @@ def _duplex_pump(store, run_id, task, attempt_id, process, prompt, stdout, journ
             if session.initialized and not initial_sent:
                 session.send_user(prompt, attempt_id + "-initial")
                 initial_sent = True
+                feed_received()
             journal.flush()
             interrupted_turn = any(r["action"] == "interrupt" and r["status"] == "acknowledged" for r in session.requests.values())
             if session.input_drain_evidence != drain_evidence:
@@ -520,6 +552,9 @@ def _duplex_pump(store, run_id, task, attempt_id, process, prompt, stdout, journ
                         session.send_user(request["text"], request["id"])
                     else:
                         session.interrupt(request["id"])
+                    feed_received()
+                    if session.protocol_error:
+                        return "failed", session.protocol_error
                     settle_since = None
                 journal.flush()
                 settled = initial_sent and session.input_drained and not session.active_tasks
@@ -547,6 +582,10 @@ def _duplex_pump(store, run_id, task, attempt_id, process, prompt, stdout, journ
                     settle_since = None
             if process.poll() is not None and not selector.get_map():
                 break
+        session.finish()
+        journal.flush()
+        if session.protocol_error:
+            return "failed", session.protocol_error
         if interrupted_turn:
             return "interrupted", "native_turn_interrupt_acknowledged"
         if session.terminal_error:
@@ -557,6 +596,9 @@ def _duplex_pump(store, run_id, task, attempt_id, process, prompt, stdout, journ
             return "failed", "native_activity_completion_unverified"
         return None, None
     except (NativeProtocolError, OSError) as exc:
+        reason, failure = _boundary(store, run_id, deadline, task_deadline, interrupted)
+        if reason:
+            return reason, failure
         return "failed", session.protocol_error or "native_transport_error"
     finally:
         session.finish()
@@ -571,15 +613,17 @@ def _execute(store, run_id, task_id, deadline, interrupted):
     from .workspaces import lease
     state = store.read(run_id)
     task = _task_by_id(state, task_id)
-    with lease(store, state["project"], task.get("workspace", "shared")):
-        return _execute_owned(store, run_id, task_id, deadline, interrupted)
+    with lease(store, state["project"], task.get("workspace", "shared"), run_id=run_id, task_id=task_id) as ownership:
+        return _execute_owned(store, run_id, task_id, deadline, interrupted, ownership)
 
 
-def _execute_owned(store, run_id, task_id, deadline, interrupted):
+def _execute_owned(store, run_id, task_id, deadline, interrupted, ownership):
     from .capabilities import inspect_launch
-    from .workspaces import prepare
+    from .workspaces import prepare, current_lease, WorkspaceBusy
     from .bridge import PublicJournal, EventTail, close_requests
     attempt_id, directory, captured = _begin_attempt(store, run_id, task_id)
+    ownership.attach_attempt(attempt_id)
+    workspace_leases = ExitStack()
     task = captured["task"]
     # Astra owns a separately-sessioned inference proxy and performs its own
     # bounded cleanup (up to two five-second waits) on SIGTERM.
@@ -597,8 +641,12 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted):
             try:
                 project = store.read(run_id)["project"]
                 environment = dict(os.environ)
-                workspace = prepare(store, run_id, task, attempt_id, project)
+                workspace = prepare(store, run_id, task, attempt_id, project, lease_stack=workspace_leases)
                 store.update(run_id, lambda state: _task_by_id(state, task_id)["attempts"][-1].update(workspace=workspace))
+                if task.get("workspace") == "worktree":
+                    ownership = current_lease()
+                    if ownership is None:
+                        raise RuntimeError("Worktree preparation did not retain checkout ownership")
                 profile = inspect_launch(task, Path(workspace["path"]), env=environment)
                 write_private_json(directory / "launch.json", profile)
                 summary_keys = ("harness", "executable", "resolved_executable", "display_executable", "status", "version", "native", "capabilities", "warnings")
@@ -623,7 +671,7 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted):
                 reason, failure_kind = _boundary(store, run_id, deadline, task_deadline, interrupted)
                 if reason:
                     raise _ControlBoundary()
-                process = subprocess.Popen(args, cwd=workspace["path"], env=environment,
+                process = ownership.spawn(args, cwd=workspace["path"], env=environment,
                                            stdin=subprocess.PIPE if duplex else stdin,
                                            stdout=subprocess.PIPE if duplex else stdout, stderr=stderr,
                                            start_new_session=True, close_fds=True)
@@ -649,17 +697,29 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted):
                             break
                         time.sleep(POLL_SECONDS)
                     if tail:
-                        while tail.poll(final=True):
-                            pass
+                        # Stop inherited stdout writers before final draining.
+                        # A child may outlive its native leader; it must not
+                        # keep this worker in an unbounded file-reading loop.
+                        if _group_exists(process.pid):
+                            _terminate_group(process.pid, process, termination_grace)
+                        while True:
+                            boundary, boundary_failure = _boundary(store, run_id, deadline, task_deadline, interrupted)
+                            if boundary:
+                                reason, failure_kind = boundary, boundary_failure
+                                break
+                            if not tail.poll(final=True):
+                                break
                 # A foreground task may leave background descendants. Keep the
                 # workflow's ownership boundary by cleaning the remaining group.
                 if _group_exists(process.pid):
                     _terminate_group(process.pid, process, termination_grace)
             except _ControlBoundary:
                 pass
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, WorkspaceBusy) as exc:
                 if reason is None:
                     reason, failure_kind = ("failed", "launch_error") if process is None else ("interrupted", "process_control_error")
+                    if isinstance(exc, WorkspaceBusy):
+                        failure_kind = "workspace_busy_after_attempt"
                 stderr.write((redact_summary(exc) + "\n").encode())
         journal.flush()
         close_requests(store, run_id, attempt_id)
@@ -702,10 +762,13 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted):
         store.update(run_id, finish)
         return reason
     finally:
-        if process is not None and _group_exists(process.pid):
-            _terminate_group(process.pid, process, termination_grace)
-        journal.flush()
-        close_requests(store, run_id, attempt_id)
+        try:
+            if process is not None and _group_exists(process.pid):
+                _terminate_group(process.pid, process, termination_grace)
+            journal.flush()
+            close_requests(store, run_id, attempt_id)
+        finally:
+            workspace_leases.close()
 
 
 def _set_run_status(store, run_id, status, reason=None):
@@ -849,4 +912,9 @@ def recover_run(store, run_id):
                 current["status"] = "interrupted"
                 current["controller"] = None
                 add_event(current, "run_recovered", unresolved_process_groups=len(unresolved))
-        return store.update(run_id, recover)
+        current = store.update(run_id, recover)
+        if current.get("checkout_claims"):
+            from .workspaces import reconcile_claims
+            _check_stale_children(current)
+            reconcile_claims(store, run_id, terminate=True)
+        return store.read(run_id)

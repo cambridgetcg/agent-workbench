@@ -6,12 +6,10 @@ import os
 from pathlib import Path
 import re
 import shutil
-import signal
-import subprocess
 import tempfile
-import time
 
 from .handoff import contains_credential_text
+from .processes import run_owned
 
 
 OUTPUT_LIMIT = 1_048_576
@@ -29,67 +27,12 @@ def _path_label(path):
     return value
 
 
-def _cleanup(process):
-    """Also end ordinary descendants after a command leader exits."""
-    success = True
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    except OSError:
-        success = False
-    if process.poll() is None:
-        try:
-            process.wait(timeout=0.1)
-        except subprocess.TimeoutExpired:
-            pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except OSError:
-        success = False
-    try:
-        process.wait(timeout=2)
-    except (subprocess.TimeoutExpired, OSError):
-        success = False
-    return success
-
-
 def _probe(argv, *, environment, cwd, timeout):
     """Private file-backed output; only callers' selected facts leave this module."""
-    result = {"outcome": "launch_failed", "exit_code": None, "text": ""}
-    with tempfile.TemporaryFile(mode="w+b") as output:
-        process = None
-        try:
-            process = subprocess.Popen(argv, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
-                                       stdout=output, stderr=output, start_new_session=True)
-            deadline = time.monotonic() + timeout
-            while process.poll() is None:
-                if os.fstat(output.fileno()).st_size > OUTPUT_LIMIT:
-                    result["outcome"] = "output_limit"
-                    break
-                if time.monotonic() >= deadline:
-                    result["outcome"] = "timed_out"
-                    break
-                time.sleep(0.01)
-            else:
-                result["outcome"] = "exited"
-            if os.fstat(output.fileno()).st_size > OUTPUT_LIMIT:
-                result["outcome"] = "output_limit"
-        except (OSError, ValueError):
-            result["outcome"] = "launch_failed"
-        except KeyboardInterrupt:
-            result["outcome"] = "interrupted"
-        finally:
-            if process is not None:
-                if not _cleanup(process):
-                    result["outcome"] = "cleanup_failed"
-                result["exit_code"] = process.returncode
-        if result["outcome"] == "exited":
-            output.seek(0)
-            result["text"] = _ANSI.sub("", output.read(OUTPUT_LIMIT).decode("utf-8", errors="replace"))
-    return result
+    result = run_owned(argv, cwd=cwd, env=environment, timeout=timeout, output_limit=OUTPUT_LIMIT)
+    return {"outcome": result["outcome"], "exit_code": result["exit_code"],
+            "text": _ANSI.sub("", "\n".join(text for text in (result["stdout"], result["stderr"]) if text)),
+            "signal": result["signal"]}
 
 
 def _stage(status, diagnostic, probe=None, **fields):
@@ -154,6 +97,9 @@ def check_mod(plugin, *, executable="claude", enable_function_hooks=False, run_t
             return _probe([selected, *arguments], environment=environment, cwd=root, timeout=timeout)
 
         version = probe(["--version"])
+        if version["outcome"] in {"interrupted", "cleanup_failed"}:
+            report["validation"] = _problem(version)
+            return report
         if version["outcome"] == "exited" and version["exit_code"] == 0:
             match = _VERSION.search(version["text"][:4096])
             report["claude_version"] = match.group(1) if match else None

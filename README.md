@@ -146,6 +146,10 @@ Read-only is a declaration, **not a sandbox**. Checkout leases coordinate only
 Workbench controllers using the same state root; they do not lock out editors
 or unrelated processes. Lease contention pauses the run with `workspace_busy`
 after existing work drains, without creating an attempt for the blocked task.
+Checkout claims survive a controller crash. Use `list --project PATH` to find
+the owning run, inspect its state, and explicitly `recover` it before reuse.
+Recovery checks recorded process identities; unresolved survivors keep the
+checkout unavailable, and recovery does not retry their work.
 
 Worktrees require a committed Git HEAD. They contain that snapshot and preserve
 the project's path relative to the repository root. Uncommitted and untracked
@@ -284,6 +288,9 @@ wall time (up to 3,600 seconds). The native cost ceiling is a list-price estimat
 and may overrun by one agent run; it is not a hard account-charge budget. Only
 verified local-report contracts are accepted, and publication is not requested.
 Private native output stays under the evaluation's state directory.
+Saved plans also fingerprint local plugin code and guides separately from the
+context estimate. Changes require a fresh plan. Evaluations and mod checks clean
+up their owned process groups on SIGINT or SIGTERM.
 
 Reports keep numeric score, cost and timing measurements without prompts,
 traces or grader evidence. Partial runs, errors, missing/unbalanced arms and

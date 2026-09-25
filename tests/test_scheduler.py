@@ -55,9 +55,13 @@ class SchedulerTests(unittest.TestCase):
 
     def run_schedule(self, run_id, *, jobs=2, max_launches=20, timeout=8, interrupted=None):
         interrupted = interrupted if interrupted is not None else {"signal": None}
-        self.store.update(run_id, lambda state: state.update(status="running"))
-        status, reason = schedule(self.store, run_id, time.monotonic() + timeout, interrupted, max_launches, jobs)
-        return _set_run_status(self.store, run_id, status, reason)
+        from agent_workbench.runner import _controller_lock
+        # schedule's caller owns the controller lock; durable read leases use
+        # that evidence when deciding whether concurrent readers are live.
+        with _controller_lock(self.store, run_id):
+            self.store.update(run_id, lambda state: state.update(status="running"))
+            status, reason = schedule(self.store, run_id, time.monotonic() + timeout, interrupted, max_launches, jobs)
+            return _set_run_status(self.store, run_id, status, reason)
 
     def async_run(self, run_id, **kwargs):
         results = []

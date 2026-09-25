@@ -1,8 +1,11 @@
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -42,10 +45,13 @@ class EvaluationTests(unittest.TestCase):
         self.executable.chmod(0o700)
 
     def cli(self, argv, **kwargs):
-        return subprocess.CompletedProcess(argv, 0, "2.1.282 (Claude Code)" if argv[-1] == "--version" else HELP, "")
+        return self.completed("2.1.282 (Claude Code)" if argv[-1] == "--version" else HELP)
+
+    def completed(self, text):
+        return {"outcome": "exited", "exit_code": 0, "stdout": text, "stderr": "", "signal": None}
 
     def plan(self, **kwargs):
-        with patch.object(evaluation.subprocess, "run", side_effect=self.cli):
+        with patch.object(evaluation, "run_owned", side_effect=self.cli):
             return evaluation.evaluation_plan(self.plugin, executable=self.executable, **kwargs)
 
     def report(self):
@@ -82,15 +88,15 @@ class EvaluationTests(unittest.TestCase):
         for version, help_text in (("2.1.282", HELP.replace(" --no-publish Keep local", " --publish-report Publish the HTML report")),
                                    ("2.1.221", "Usage: claude plugin [options]")):
             def fake(argv, **kwargs):
-                return subprocess.CompletedProcess(argv, 0, version if argv[-1] == "--version" else help_text, "")
-            with patch.object(evaluation.subprocess, "run", side_effect=fake), self.assertRaises(ValueError):
+                return self.completed(version if argv[-1] == "--version" else help_text)
+            with patch.object(evaluation, "run_owned", side_effect=fake), self.assertRaises(ValueError):
                 evaluation.evaluation_capabilities(self.executable)
 
     def test_accepts_observed_legacy_opt_in_publication(self):
         def fake(argv, **kwargs):
             text = "2.1.221" if argv[-1] == "--version" else HELP.replace(" --no-publish Keep local", " --publish-report Publish the HTML report")
-            return subprocess.CompletedProcess(argv, 0, text, "")
-        with patch.object(evaluation.subprocess, "run", side_effect=fake):
+            return self.completed(text)
+        with patch.object(evaluation, "run_owned", side_effect=fake):
             self.assertEqual(evaluation.evaluation_capabilities(self.executable)["publication"], "legacy_opt_in_not_requested")
 
     def test_inventory_never_follows_external_component_links(self):
@@ -155,18 +161,81 @@ class EvaluationTests(unittest.TestCase):
     def test_run_rejects_changed_plugin_before_launch(self):
         plan = self.plan()
         (self.plugin / "skills/example/SKILL.md").write_text("changed")
-        with patch.object(evaluation.subprocess, "run", side_effect=self.cli), patch.object(evaluation.subprocess, "Popen") as launch:
+        with patch.object(evaluation, "run_owned", side_effect=self.cli) as launch:
             with self.assertRaisesRegex(ValueError, "changed"):
                 evaluation.run_evaluation(plan, state_root=self.root / "state")
-            launch.assert_not_called()
+            self.assertTrue(all(call.args[0][-1] in {"--version", "--help"} for call in launch.call_args_list))
 
     def test_run_rejects_changed_eval_case_before_launch(self):
         plan = self.plan()
         (self.plugin / "evals/check/prompt.md").write_text("Changed task")
-        with patch.object(evaluation.subprocess, "run", side_effect=self.cli), patch.object(evaluation.subprocess, "Popen") as launch:
+        with patch.object(evaluation, "run_owned", side_effect=self.cli) as launch:
             with self.assertRaisesRegex(ValueError, "changed"):
                 evaluation.run_evaluation(plan, state_root=self.root / "state")
-            launch.assert_not_called()
+            self.assertTrue(all(call.args[0][-1] in {"--version", "--help"} for call in launch.call_args_list))
+
+    def test_payload_covers_code_docs_scripts_and_dot_configuration(self):
+        for relative in ("README.md", "scripts/agent-workbench", "agent_workbench/runner.py", ".claude/settings.json"):
+            path = self.plugin / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("original")
+            plan = self.plan()
+            inventory = plan["inventory"]
+            path.write_text("changed")
+            with self.subTest(relative=relative), patch.object(evaluation, "run_owned", side_effect=self.cli) as launch:
+                self.assertEqual(evaluation.plugin_inventory(self.plugin), inventory)
+                with self.assertRaisesRegex(ValueError, "changed"):
+                    evaluation.run_evaluation(plan, state_root=self.root / "state")
+                self.assertTrue(all(call.args[0][-1] in {"--version", "--help"} for call in launch.call_args_list))
+
+    def test_payload_rejects_external_links_and_ignores_generated_cache(self):
+        original = evaluation.plugin_payload(self.plugin)
+        (self.plugin / "__pycache__").mkdir()
+        (self.plugin / "__pycache__/example.pyc").write_bytes(b"cache")
+        (self.plugin / ".git").mkdir()
+        (self.plugin / ".git/config").write_text("local repository metadata")
+        self.assertEqual(evaluation.plugin_payload(self.plugin), original)
+        (self.plugin / "README.md").symlink_to(self.root / "external.md")
+        with self.assertRaisesRegex(ValueError, "symbolic links"):
+            evaluation.plugin_payload(self.plugin)
+
+    def test_sigterm_to_evaluation_controller_cleans_evaluator_descendants(self):
+        ready = self.root / "ready.json"
+        child = "import time; time.sleep(30)"
+        script = "#!/usr/bin/env python3\nimport json,os,subprocess,sys,time\nfrom pathlib import Path\na=sys.argv\n"
+        script += "if '--version' in a: print('2.1.282')\n"
+        script += "elif '--help' in a: print(" + repr(HELP) + ")\n"
+        script += "else:\n p=subprocess.Popen([sys.executable,'-c'," + repr(child) + "])\n"
+        script += " Path(" + repr(str(ready)) + ").write_text(json.dumps({'child':p.pid,'group':os.getpid()}))\n time.sleep(30)\n"
+        self.executable.write_text(script)
+        program = "from agent_workbench.evaluation import evaluation_plan,run_evaluation; import json; "
+        program += "p=evaluation_plan(" + repr(str(self.plugin)) + ",executable=" + repr(str(self.executable)) + "); "
+        program += "print(json.dumps(run_evaluation(p,state_root=" + repr(str(self.root / 'state')) + ")))"
+        controller = subprocess.Popen([sys.executable, "-c", program], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        owned = None
+        try:
+            deadline = time.monotonic() + 8
+            while not ready.exists() and controller.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "synthetic evaluator did not start")
+            owned = json.loads(ready.read_text())
+            controller.send_signal(signal.SIGTERM)
+            stdout, stderr = controller.communicate(timeout=5)
+            self.assertEqual(controller.returncode, 0, stderr)
+            summary = json.loads(stdout)
+            self.assertEqual(summary["execution"], "interrupted")
+            self.assertEqual(summary["signal"], signal.SIGTERM)
+            state = subprocess.run(["ps", "-p", str(owned["child"]), "-o", "stat="], capture_output=True, text=True).stdout.strip()
+            self.assertTrue(not state or state.startswith("Z"), state)
+        finally:
+            if controller.poll() is None:
+                controller.kill()
+                controller.wait()
+            if owned:
+                try:
+                    os.killpg(owned["group"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_missing_scores_or_unbalanced_arms_cannot_support_comparison(self):
         for kind in ("score", "arm"):

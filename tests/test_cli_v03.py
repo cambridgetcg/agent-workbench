@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 from agent_workbench.bridge import claim_requests, close_requests
@@ -209,6 +210,57 @@ class CliV03Tests(unittest.TestCase):
                 if request_id:
                     self.assertNotIn(request_id, error)
                 self.assertEqual(self.store.read(run_id), before)
+
+    def test_reserved_controller_request_ids_are_rejected_atomically(self):
+        run_id = self.create()
+        self.activate(run_id)
+        before = self.store.read(run_id)
+        identifiers = ("attempt-1-initial", "attempt-1-initialize", "attempt-1-future-control",
+                       "f" * 32 + "-future-control", "workbench-future-internal")
+        for ident in identifiers:
+            for action, body in (("send", ("followup",)), ("interrupt", ())):
+                with self.subTest(ident=ident, action=action):
+                    code, output, error = self.cli(action, run_id, "work", *body, "--request-id", ident)
+                    self.assertEqual(code, 1)
+                    self.assertIn("reserved controller namespace", error)
+                    self.assertFalse(output)
+                    self.assertEqual(self.store.read(run_id), before)
+        self.assertEqual(self.cli("send", run_id, "work", "legitimate", "--request-id", "caller-followup")[0], 0)
+
+    def test_native_wire_id_collisions_are_rejected_before_dispatch(self):
+        from agent_workbench.native import _NAMESPACE
+        run_id = self.create()
+        self.activate(run_id)
+        initial_wire_id = str(uuid.uuid5(_NAMESPACE, "attempt-1-initial"))
+        before = self.store.read(run_id)
+        code, _, error = self.cli("interrupt", run_id, "work", "--request-id", initial_wire_id)
+        self.assertEqual(code, 1)
+        self.assertIn("wire identifier", error)
+        self.assertEqual(self.store.read(run_id), before)
+        self.assertEqual(self.cli("send", run_id, "work", "queued input", "--request-id", "caller-input")[0], 0)
+        input_wire_id = str(uuid.uuid5(_NAMESPACE, "caller-input"))
+        before = self.store.read(run_id)
+        self.assertEqual(self.cli("interrupt", run_id, "work", "--request-id", input_wire_id)[0], 1)
+        self.assertEqual(self.store.read(run_id), before)
+        future_input_wire = str(uuid.uuid5(_NAMESPACE, "future-caller-input"))
+        self.assertEqual(self.cli("interrupt", run_id, "work", "--request-id", future_input_wire)[0], 0)
+        before = self.store.read(run_id)
+        code, _, error = self.cli("send", run_id, "work", "colliding future input", "--request-id", "future-caller-input")
+        self.assertEqual(code, 1)
+        self.assertIn("wire identifier", error)
+        self.assertEqual(self.store.read(run_id), before)
+
+    def test_existing_reserved_looking_receipt_is_lookup_only_after_upgrade(self):
+        run_id = self.create()
+        self.activate(run_id)
+        def old_receipt(state):
+            state["control"]["native_requests"] = [{"id": "workbench-old-caller", "task_id": "work", "attempt_id": "old-attempt",
+                                                     "action": "interrupt", "status": "acknowledged", "at": "earlier"}]
+        self.store.update(run_id, old_receipt)
+        code, output, error = self.cli("interrupt", run_id, "work", "--request-id", "workbench-old-caller")
+        self.assertEqual((code, error), (0, ""))
+        self.assertEqual(json.loads(output)["attempt_id"], "old-attempt")
+        self.assertEqual(claim_requests(self.store, run_id, "attempt-1"), [])
 
     def test_input_batch_bound_preserves_interrupt_capacity_and_is_per_attempt(self):
         run_id = self.create()

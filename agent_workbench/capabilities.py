@@ -13,13 +13,14 @@ import os
 from pathlib import Path
 import re
 import stat
-import subprocess
-import tempfile
 import tomllib
+
+from .processes import run_owned
 
 
 _LIMIT = 2_097_152
 _PROBE_LIMIT = 262_144
+_PROBE_TIMEOUT_SECONDS = 3
 _MAX_ROWS = 100
 _EXECUTABLES = {"codex": "codex", "claude": "claude", "astra": "claude-astra",
                 "astra-ultra": "claude-astra-ultra"}
@@ -125,22 +126,21 @@ def _paths(name: str, project: Path, env: dict) -> list[Path]:
 
 
 def _probe(executable: Path, args: list[str], project: Path, env: dict) -> tuple[dict, str]:
-    # File-backed capture bounds memory even if an unexpected executable floods
-    # output. Only parsed metadata survives this function; raw output is removed.
+    # Discovery owns helpers too: a successful --help leader can leave a child
+    # behind, just as a timed-out probe can. Raw output stays in private bounded
+    # files and only successfully completed probes reach the metadata parser.
     try:
-        with tempfile.TemporaryFile() as output:
-            result = subprocess.run([str(executable), *args], stdout=output, stderr=output,
-                                    stdin=subprocess.DEVNULL, timeout=3, env=env, cwd=project,
-                                    check=False)
-            output.seek(0)
-            raw = output.read(_PROBE_LIMIT + 1)
-        text = raw[:_PROBE_LIMIT].decode("utf-8", errors="replace")
-        return {"status": "reported" if result.returncode == 0 else "failed",
-                "exit_code": result.returncode, "output_truncated": len(raw) > _PROBE_LIMIT}, text
-    except subprocess.TimeoutExpired:
-        return {"status": "timed_out"}, ""
+        result = run_owned([str(executable), *args], cwd=project, env=env,
+                           timeout=_PROBE_TIMEOUT_SECONDS, output_limit=_PROBE_LIMIT)
     except (OSError, ValueError):
         return {"status": "failed"}, ""
+    outcome = result["outcome"]
+    if outcome == "exited":
+        return {"status": "reported" if result["exit_code"] == 0 else "failed",
+                "exit_code": result["exit_code"], "output_truncated": False}, result["stdout"] + result["stderr"]
+    return {"status": outcome if outcome in {"timed_out", "interrupted", "output_limit"} else "failed",
+            "failure_kind": outcome, "exit_code": result["exit_code"],
+            "output_truncated": outcome == "output_limit"}, ""
 
 
 def _capability(status: str, evidence: str, **extra) -> dict:
@@ -209,8 +209,13 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
         version_info, text = _probe(native, ["--version"], project, env)
         match = _SEMVER.search(text)
         version_info["version"] = match.group(1) if match and version_info["status"] == "reported" else None
-        help_info, help_text = _probe(native, ["--help"], project, env)
-        if harness == "codex":
+        if version_info["status"] == "interrupted":
+            # A captured signal ends discovery; do not start a second native
+            # probe after the helper has cleaned the interrupted process group.
+            help_info = {"status": "interrupted"}
+        else:
+            help_info, help_text = _probe(native, ["--help"], project, env)
+        if harness == "codex" and help_info["status"] != "interrupted":
             exec_info, exec_text = _probe(native, ["exec", "--help"], project, env)
             help_info["exec_status"] = exec_info["status"]
             if exec_info["status"] == "reported":

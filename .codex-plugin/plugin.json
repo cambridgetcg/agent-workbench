@@ -1,6 +1,6 @@
 {
   "name": "agent-workbench",
-  "version": "0.3.0+codex.20260925111033",
+  "version": "0.3.0+codex.20260925113941",
   "description": "Local agent diagnostics, native control receipts, isolated workflows, plugin evaluations and portable handoffs.",
   "author": {
     "name": "Local developer"

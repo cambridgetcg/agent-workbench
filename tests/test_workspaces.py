@@ -128,6 +128,51 @@ class WorkspaceOwnershipTests(unittest.TestCase):
         self.git(project, "add", "tracked.txt")
         self.git(project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
 
+    def create_run(self, project=None, *, code="pass", mode="shared"):
+        task = {"id": "work", "harness": "command", "argv": [sys.executable, "-c", code], "workspace": mode}
+        return self.store.create({"version": 1, "name": "Durable ownership fixture", "goal": "Verify surviving checkout ownership", "tasks": [task]}, project or self.project)["id"]
+
+    def controller(self, run_id, *, gate_crash=False, env=None):
+        source = str(Path(workspaces.__file__).resolve().parent.parent)
+        program = r'''
+import os,sys
+sys.path.insert(0,sys.argv[1])
+from agent_workbench.store import Store
+from agent_workbench.runner import run_workflow
+from agent_workbench.workspaces import CheckoutLease
+if sys.argv[4] == 'gate-crash':
+    original = CheckoutLease._change
+    def change(self, callback):
+        original(self, callback)
+        if callback.__name__ == 'register':
+            os._exit(77)
+    CheckoutLease._change = change
+run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
+'''
+        process = subprocess.Popen([sys.executable, "-I", "-S", "-c", program, source,
+                                    str(self.store.root), run_id, "gate-crash" if gate_crash else "normal"],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   env=env, start_new_session=True)
+        def close():
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=3)
+        self.addCleanup(close)
+        return process
+
+    def wait(self, condition, description):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            result = condition()
+            if result:
+                return result
+            time.sleep(0.01)
+        self.fail("Timed out waiting for " + description)
+
+    def stop_group_after_test(self, group):
+        from agent_workbench.runner import _terminate_group
+        self.addCleanup(lambda: _terminate_group(group, grace_seconds=0.2))
+
     def owned(self):
         self.repository(self.project)
         task = {"id": "work", "harness": "command", "argv": [sys.executable, "-c", "pass"], "workspace": "worktree"}
@@ -208,6 +253,123 @@ class WorkspaceOwnershipTests(unittest.TestCase):
             workspaces.remove_clean(self.store, run_id, "work", attempt_id)
         self.assertTrue(checkout.is_dir())
         self.assertTrue(self.store.read(run_id)["tasks"][0]["attempts"][0]["workspace"]["retained"])
+
+    def test_controller_crash_keeps_checkout_owned_until_explicit_recovery(self):
+        from agent_workbench.runner import recover_run, run_workflow
+        marker = self.root / "native.pid"
+        code = "import os,pathlib,time; pathlib.Path(" + repr(str(marker)) + ").write_text(str(os.getpid())); time.sleep(30)"
+        owner_run = self.create_run(code=code)
+        owner = self.controller(owner_run)
+        self.wait(marker.exists, "owned native child")
+        child = int(marker.read_text())
+        self.stop_group_after_test(child)
+        self.wait(lambda: self.store.read(owner_run)["tasks"][0]["attempts"][-1].get("pid"), "native process recording")
+        owner.kill()
+        owner.wait(timeout=3)
+        self.assertTrue(workspaces._group_running(child))
+        self.assertTrue(self.store.read(owner_run)["checkout_claims"])
+        second_marker = self.root / "second-started"
+        second_run = self.create_run(code="from pathlib import Path; Path(" + repr(str(second_marker)) + ").touch()")
+        blocked = run_workflow(self.store, second_run, timeout_seconds=5)
+        self.assertEqual(blocked["status"], "paused")
+        self.assertFalse(blocked["tasks"][0]["attempts"])
+        self.assertFalse(second_marker.exists())
+        recovered = recover_run(self.store, owner_run)
+        self.assertEqual(recovered["checkout_claims"], [])
+        self.assertFalse(workspaces._group_running(child))
+        self.assertEqual(run_workflow(self.store, second_run, timeout_seconds=5)["status"], "succeeded")
+        self.assertTrue(second_marker.exists())
+
+    def test_gate_crash_cannot_execute_native_or_python_startup_before_registration(self):
+        from agent_workbench.runner import recover_run, run_workflow
+        site = self.root / "python-startup"
+        site.mkdir()
+        sentinel = self.root / "unregistered-startup-effect"
+        (site / "sitecustomize.py").write_text("from pathlib import Path\nPath(" + repr(str(sentinel)) + ").touch()\n")
+        native_effect = self.root / "unregistered-native-effect"
+        owner_run = self.create_run(code="from pathlib import Path; Path(" + repr(str(native_effect)) + ").touch()")
+        environment = dict(os.environ, PYTHONPATH=str(site))
+        owner = self.controller(owner_run, gate_crash=True, env=environment)
+        self.assertEqual(owner.wait(timeout=5), 77)
+        self.assertFalse(native_effect.exists())
+        self.assertFalse(sentinel.exists())
+        state = self.store.read(owner_run)
+        self.assertTrue(state["checkout_claims"])
+        index = state["checkout_claims"][0]
+        ledger = workspaces._claims(workspaces._lock_directory(self.store), index["checkout_key"])
+        group = ledger["claims"][0]["processes"][0]["process_group"]
+        self.stop_group_after_test(group)
+        self.wait(lambda: not workspaces._group_running(group), "closed gate broker exit")
+        second_run = self.create_run()
+        self.assertEqual(run_workflow(self.store, second_run, timeout_seconds=5)["status"], "paused")
+        self.assertEqual(recover_run(self.store, owner_run)["checkout_claims"], [])
+        self.assertEqual(run_workflow(self.store, second_run, timeout_seconds=5)["status"], "succeeded")
+
+    def test_cleanup_refuses_other_run_actively_using_retained_tree(self):
+        from agent_workbench.runner import run_workflow
+        owner_run, attempt_id, checkout = self.owned()
+        marker, gate = self.root / "foreign-started", self.root / "foreign-finish"
+        code = ("from pathlib import Path; import time; Path(" + repr(str(marker)) + ").touch(); "
+                "gate=Path(" + repr(str(gate)) + ")\nwhile not gate.exists(): time.sleep(0.01)\n")
+        foreign_run = self.create_run(checkout, code=code, mode="read-only")
+        controller = self.controller(foreign_run)
+        self.wait(marker.exists, "foreign checkout reader")
+        attempt = self.store.read(foreign_run)["tasks"][0]["attempts"][-1]
+        self.stop_group_after_test(attempt["process_group"])
+        with self.assertRaises(workspaces.WorkspaceBusy):
+            workspaces.remove_clean(self.store, owner_run, "work", attempt_id)
+        self.assertTrue(checkout.is_dir())
+        gate.touch()
+        self.assertEqual(controller.wait(timeout=5), 0)
+        self.assertEqual(self.store.read(foreign_run)["status"], "succeeded")
+        removed = workspaces.remove_clean(self.store, owner_run, "work", attempt_id)
+        self.assertFalse(checkout.exists())
+        self.assertFalse(removed["tasks"][0]["attempts"][0]["workspace"]["retained"])
+
+    def test_worktree_hook_survives_controller_crash_but_retains_checkout_claim(self):
+        from agent_workbench.runner import recover_run, run_workflow
+        self.repository(self.project)
+        hooks = self.project / ".git/hooks"
+        marker = self.root / "post-checkout-started"
+        hook = hooks / "post-checkout"
+        hook.write_text(f"#!{sys.executable}\nimport pathlib,time\npathlib.Path({str(marker)!r}).touch()\ntime.sleep(30)\n")
+        hook.chmod(0o700)
+        self.git(self.project, "config", "core.hooksPath", str(hooks))
+        owner_run = self.create_run(mode="worktree")
+        controller = self.controller(owner_run)
+        self.wait(marker.exists, "worktree preparation hook")
+        state = self.store.read(owner_run)
+        workspace = state["tasks"][0]["attempts"][-1]["workspace"]
+        checkout = Path(workspace["root"])
+        self.assertTrue(checkout.is_dir())
+        index = state["checkout_claims"][0]
+        ledger = workspaces._claims(workspaces._lock_directory(self.store), index["checkout_key"])
+        helper_group = ledger["claims"][0]["processes"][0]["process_group"]
+        self.stop_group_after_test(helper_group)
+        controller.kill()
+        controller.wait(timeout=3)
+        self.assertTrue(workspaces._group_running(helper_group))
+        foreign_run = self.create_run(checkout)
+        self.assertEqual(run_workflow(self.store, foreign_run, timeout_seconds=5)["status"], "paused")
+        recovered = recover_run(self.store, owner_run)
+        self.assertEqual(recovered["checkout_claims"], [])
+        self.assertFalse(workspaces._group_running(helper_group))
+        self.assertTrue(checkout.is_dir())
+
+    def test_ledger_only_astra_recovery_preserves_proxy_cleanup_grace(self):
+        from agent_workbench.runner import _controller_lock
+        task = {"id": "work", "harness": "astra", "prompt": "fixture; never executed"}
+        run_id = self.store.create({"version": 1, "name": "Astra ownership fixture", "goal": "Verify recorded cleanup grace", "tasks": [task]}, self.project)["id"]
+        with _controller_lock(self.store, run_id):
+            with workspaces.lease(self.store, self.project, "shared", run_id=run_id, task_id="work") as owner:
+                owner._change(lambda claim: claim["processes"].append({"pid": 123456789,
+                    "process_group": 123456789, "process_identity": "matching-start"}))
+                with patch.object(workspaces, "_group_running", side_effect=[True, False]), \
+                        patch("agent_workbench.runner._process_identity", return_value="matching-start"), \
+                        patch("agent_workbench.runner._terminate_group") as terminate:
+                    workspaces.reconcile_claims(self.store, run_id, terminate=True)
+                terminate.assert_called_once_with(123456789, grace_seconds=12)
+                self.assertEqual(self.store.read(run_id)["checkout_claims"], [])
 
 
 if __name__ == "__main__":

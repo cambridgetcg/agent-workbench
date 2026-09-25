@@ -14,13 +14,12 @@ import os
 from pathlib import Path
 import re
 import shutil
-import signal
 import stat
-import subprocess
 import time
 import uuid
 
 from .handoff import contains_credential_text
+from .processes import run_owned
 from .store import now, write_private_json
 
 
@@ -30,6 +29,9 @@ MAX_FILES = 2000
 COMPONENTS = ("skills", "commands", "agents", "output-styles", "workflows", "hooks")
 _VERSION = re.compile(r"(?<![\w.])(\d{1,4}\.\d{1,4}\.\d{1,4})(?![\w.])")
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}\Z")
+_PAYLOAD_EXCLUDED_DIRS = {".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache", ".agent-workbench-state"}
+_PAYLOAD_MAX_FILES = 5000
+_PAYLOAD_MAX_BYTES = 64_000_000
 
 
 def _number(value, low=0, high=1e12):
@@ -128,24 +130,71 @@ def plugin_inventory(plugin):
                             "Skills load progressively; inventory size is not per-turn context cost."]}
 
 
+def plugin_payload(plugin):
+    """Fingerprint local plugin code, docs, fixtures and configuration separately.
+
+    This includes README/skill references, scripts, package source and dotfiles,
+    independent of whether native context currently loads them. External
+    references and runtime dependencies are not pinned by this local digest.
+    Symlinks in the payload are rejected rather than traversed or silently omitted.
+    """
+    root = Path(plugin).expanduser().resolve(strict=True)
+    digest, count, byte_count = hashlib.sha256(), 0, 0
+    def unreadable(_error):
+        raise ValueError("Plugin payload contains an unreadable directory.")
+    for base, directories, files in os.walk(root, followlinks=False, onerror=unreadable):
+        here = Path(base)
+        directories[:] = sorted(name for name in directories if name not in _PAYLOAD_EXCLUDED_DIRS
+                                 and (here / name).relative_to(root).as_posix() != "evals/results")
+        for name in directories:
+            path = here / name
+            if path.is_symlink():
+                raise ValueError("Plugin payload must not contain symbolic links.")
+            relative = path.relative_to(root).as_posix().encode()
+            digest.update(b"directory\0" + len(relative).to_bytes(4, "big") + relative)
+        for name in sorted(files):
+            if name in {".git", ".DS_Store"} or name.endswith((".pyc", ".pyo")):
+                continue
+            path = here / name
+            if path.is_symlink():
+                raise ValueError("Plugin payload must not contain symbolic links.")
+            count += 1
+            if count > _PAYLOAD_MAX_FILES:
+                raise ValueError("Plugin payload contains too many files.")
+            data = _read_regular(path, MAX_REPORT_BYTES)
+            byte_count += len(data)
+            if byte_count > _PAYLOAD_MAX_BYTES:
+                raise ValueError("Plugin payload exceeds its size limit.")
+            relative = path.relative_to(root).as_posix().encode()
+            executable_bits = path.stat().st_mode & 0o111
+            digest.update(b"file\0" + len(relative).to_bytes(4, "big") + relative
+                          + executable_bits.to_bytes(2, "big") + len(data).to_bytes(8, "big") + data)
+    return {"sha256": digest.hexdigest(), "files": count, "bytes": byte_count,
+            "excluded_directories": sorted(_PAYLOAD_EXCLUDED_DIRS | {"evals/results"}),
+            "excluded_files": [".git", ".DS_Store", "*.pyc", "*.pyo"],
+            "scope": "local plugin payload; external references, dependencies and configuration remain unverified"}
+
+
 def evaluation_capabilities(executable="claude"):
     selected = shutil.which(str(executable))
     if selected is None:
         raise ValueError("Claude evaluation executable was not found.")
     selected = str(Path(selected).resolve(strict=True))
     environment = {**os.environ, "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1"}
-    try:
-        version_result = subprocess.run([selected, "--version"], capture_output=True, text=True, timeout=5,
-                                        stdin=subprocess.DEVNULL, env=environment, check=False)
-        help_result = subprocess.run([selected, "plugin", "eval", "--help"], capture_output=True, text=True,
-                                     timeout=5, stdin=subprocess.DEVNULL, env=environment, check=False)
-    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+    grace = 12 if Path(selected).name in {"claude-astra", "claude-astra-ultra"} else 1
+    version_result = run_owned([selected, "--version"], env=environment, timeout=5,
+                               output_limit=100_000, termination_grace=grace)
+    if version_result["outcome"] != "exited":
         raise ValueError("Cannot verify Claude evaluation capabilities.") from None
-    version = _VERSION.search(version_result.stdout[:4096])
-    help_text = help_result.stdout[:100_000]
+    help_result = run_owned([selected, "plugin", "eval", "--help"], env=environment, timeout=5,
+                            output_limit=100_000, termination_grace=grace)
+    if help_result["outcome"] != "exited":
+        raise ValueError("Cannot verify Claude evaluation capabilities.")
+    version = _VERSION.search(version_result["stdout"][:4096])
+    help_text = help_result["stdout"]
     flags = set(re.findall(r"(?<!\S)--[a-z][a-z-]+\b", help_text))
     required = {"--ablation", "--runs", "--case", "--max-cost-usd", "--output-dir", "--json"}
-    if help_result.returncode != 0 or "Usage: claude plugin eval" not in help_text or not required <= flags:
+    if help_result["exit_code"] != 0 or "Usage: claude plugin eval" not in help_text or not required <= flags:
         raise ValueError("Selected executable does not expose the required native eval contract.")
     if "--no-publish" in flags:
         publication = "explicit_no_publish"
@@ -202,6 +251,7 @@ def evaluation_plan(plugin, *, executable="claude", runs=3, case=None, max_cases
         relative = path.relative_to(root).as_posix().encode()
         suite_digest.update(len(relative).to_bytes(4, "big") + relative + len(data).to_bytes(8, "big") + data)
     capabilities = evaluation_capabilities(executable)
+    payload = plugin_payload(root)
     if trust_plugin and "--trust-plugin" not in capabilities["flags"]:
         raise ValueError("Selected evaluator does not support explicit directory trust.")
     if model and "--model" not in capabilities["flags"] or judge_model and "--judge-model" not in capabilities["flags"]:
@@ -210,6 +260,7 @@ def evaluation_plan(plugin, *, executable="claude", runs=3, case=None, max_cases
         raise ValueError("Selected evaluator does not support explicit tool grants.")
     return {"format": "agent-workbench-evaluation-plan", "version": 1, "plugin": str(root),
             "capabilities": capabilities, "inventory": inventory, "ablation": "with-without",
+            "payload": payload,
             "suite_case_count": len(case_dirs), "maximum_agent_runs": 2 * runs * len(case_dirs),
             "suite_sha256": suite_digest.hexdigest(),
             "options": {"runs": runs, "case": case, "max_cases": max_cases, "timeout_seconds": timeout_seconds,
@@ -283,17 +334,6 @@ def evaluation_report(source):
     return result
 
 
-def _stop_group(process):
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            break
-        if sig == signal.SIGTERM:
-            time.sleep(0.2)
-    process.wait(timeout=5)
-
-
 def run_evaluation(plan, *, state_root=None):
     """Explicitly execute a prepared plan; never retry an interrupted evaluation."""
     if not isinstance(plan, dict) or plan.get("format") != "agent-workbench-evaluation-plan" or plan.get("version") != 1:
@@ -302,7 +342,7 @@ def run_evaluation(plan, *, state_root=None):
         checked = evaluation_plan(plan["plugin"], executable=plan["capabilities"]["executable"], **plan["options"])
     except (KeyError, TypeError):
         raise ValueError("Invalid evaluation plan.") from None
-    if any(checked.get(key) != plan.get(key) for key in ("capabilities", "inventory", "suite_case_count", "suite_sha256")):
+    if any(checked.get(key) != plan.get(key) for key in ("capabilities", "inventory", "payload", "suite_case_count", "suite_sha256")):
         raise ValueError("Evaluation executable or plugin changed; create a fresh plan before running.")
     root = Path(state_root or os.environ.get("AGENT_WORKBENCH_STATE_DIR", Path.home() / ".local/state/agent-workbench")).expanduser()
     if root.is_symlink() or (root / "evaluations").is_symlink():
@@ -329,28 +369,15 @@ def run_evaluation(plan, *, state_root=None):
     if options["allow_tools"]:
         argv += ["--allow-tools", *options["allow_tools"]]
     write_private_json(directory / "plan.json", checked)
-    started, elapsed_start, returncode, execution = now(), time.monotonic(), None, "launch_failed"
+    started, elapsed_start = now(), time.monotonic()
     environment = {**os.environ, "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1"}
     log_path = directory / "native-output.log"
-    descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as log:
-        process = None
-        try:
-            process = subprocess.Popen(argv, cwd=checked["plugin"], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                       env=environment, start_new_session=True)
-            returncode = process.wait(timeout=options["timeout_seconds"])
-            execution = "completed" if returncode == 0 else "native_failed"
-        except subprocess.TimeoutExpired:
-            execution = "timed_out"
-        except KeyboardInterrupt:
-            execution = "interrupted"
-        except OSError:
-            execution = "launch_failed"
-        finally:
-            if process is not None:
-                # A grader or model child may outlive the evaluator even on exit.
-                _stop_group(process)
-                returncode = process.returncode
+    observed = run_owned(argv, cwd=checked["plugin"], env=environment, timeout=options["timeout_seconds"],
+                         output_limit=MAX_REPORT_BYTES, stdout_path=log_path,
+                         stderr_path=directory / "native-error.log", capture_output=False,
+                         termination_grace=12 if Path(capabilities["executable"]).name in {"claude-astra", "claude-astra-ultra"} else 1)
+    returncode = observed["exit_code"]
+    execution = ("completed" if returncode == 0 else "native_failed") if observed["outcome"] == "exited" else observed["outcome"]
     try:
         summary = evaluation_report(native_report)
     except ValueError:
@@ -360,6 +387,7 @@ def run_evaluation(plan, *, state_root=None):
         summary["eligible_for_comparison"] = False
     summary.update(id=directory.name, started_at=started, finished_at=now(), execution=execution,
                    exit_code=returncode, observed_wall_seconds=round(time.monotonic() - elapsed_start, 3),
-                   inventory=checked["inventory"], publication="local only", state_directory=str(directory))
+                   inventory=checked["inventory"], payload=checked["payload"], signal=observed["signal"],
+                   publication="local only", state_directory=str(directory))
     write_private_json(directory / "summary.json", summary)
     return summary

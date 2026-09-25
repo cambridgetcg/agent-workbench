@@ -127,6 +127,25 @@ def request_native(store, run_id, task_id, action, text=None, request_id=None):
         attempt = task["attempts"][-1]
         if not attempt.get("duplex_initialized") or attempt.get("input_closed"):
             raise ValueError("Native duplex input is not open and initialized")
+        # Keep controller-generated IDs in a reserved namespace, including
+        # future suffixes and attempts that have not yet been created. Existing
+        # records were handled above so a repeated caller ID remains a lookup,
+        # never a dispatch into a newer attempt.
+        attempt_ids = [entry["id"] for candidate in state["tasks"] for entry in candidate.get("attempts", [])]
+        if (ident.startswith("workbench-") or re.match(r"[a-f0-9]{32}-", ident)
+                or any(ident.startswith(attempt_id + "-") for attempt_id in attempt_ids)):
+            raise ValueError("Native request ID uses a reserved controller namespace")
+        # User frames carry deterministic UUIDs while interrupt controls use
+        # their caller ID. Reject cross-kind wire collisions before accepting
+        # a durable request, rather than aborting an otherwise healthy session
+        # later in NativeSession._begin.
+        from .native import _NAMESPACE
+        wire_id = str(uuid.uuid5(_NAMESPACE, ident)) if action == "input" else ident
+        occupied = {attempt["id"] + "-initialize", str(uuid.uuid5(_NAMESPACE, attempt["id"] + "-initial"))}
+        occupied.update(str(uuid.uuid5(_NAMESPACE, request["id"])) if request["action"] == "input" else request["id"]
+                        for request in requests if request["attempt_id"] == attempt["id"])
+        if wire_id in occupied:
+            raise ValueError("Native request ID collides with an existing wire identifier")
         if len(requests) >= 128 or sum(r["status"] == "queued" for r in requests) >= 64:
             raise ValueError("Native control queue limit reached")
         # A native result may coalesce every input into one UUID batch. Keep

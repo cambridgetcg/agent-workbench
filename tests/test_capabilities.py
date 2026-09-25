@@ -2,7 +2,10 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -26,10 +29,9 @@ class CapabilityTests(unittest.TestCase):
         def probe(argv, **kwargs):
             self.calls.append((argv, kwargs))
             text = self.version if argv[-1] == "--version" else self.help
-            kwargs["stdout"].write(text.encode())
-            return subprocess.CompletedProcess(argv, 0)
+            return {"outcome": "exited", "exit_code": 0, "stdout": text, "stderr": "", "signal": None}
 
-        self.run = patch.object(capabilities.subprocess, "run", side_effect=probe)
+        self.run = patch.object(capabilities, "run_owned", side_effect=probe)
         self.run_mock = self.run.start()
         self.addCleanup(self.run.stop)
 
@@ -126,11 +128,21 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(missing["capabilities"]["structured_events"]["status"], "unverified")
         self.assertEqual(self.calls, [])
         self.executable()
-        self.run_mock.side_effect = subprocess.TimeoutExpired(["claude", "--help"], 3)
+        self.run_mock.side_effect = None
+        self.run_mock.return_value = {"outcome": "timed_out", "exit_code": -9, "stdout": "", "stderr": "", "signal": None}
         profile = self.inspect()
         self.assertEqual(profile["version"]["status"], "timed_out")
         self.assertEqual(profile["help"]["status"], "timed_out")
         self.assertEqual(profile["capabilities"]["structured_events"]["status"], "unverified")
+
+    def test_interrupted_version_probe_does_not_launch_following_help(self):
+        self.executable()
+        self.run_mock.side_effect = None
+        self.run_mock.return_value = {"outcome": "interrupted", "exit_code": -15, "stdout": "", "stderr": "", "signal": signal.SIGTERM}
+        profile = self.inspect()
+        self.assertEqual(profile["version"]["status"], "interrupted")
+        self.assertEqual(profile["help"]["status"], "interrupted")
+        self.assertEqual(self.run_mock.call_count, 1)
 
     def test_newer_version_does_not_claim_runtime_feature_activation(self):
         self.executable()
@@ -244,6 +256,96 @@ class CapabilityTests(unittest.TestCase):
         self.inspect()
         after = {str(path.relative_to(self.home)): path.read_bytes() for path in self.home.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
+
+
+PROBE_WITH_CHILD = r'''
+import json, os, pathlib, subprocess, sys, time
+root = pathlib.Path(os.environ["WORKBENCH_PROBE_RECORDS"])
+phase = sys.argv[-1].lstrip("-")
+(root / (phase + ".leader")).write_text(str(os.getpid()))
+child_code = "import json,os,pathlib,signal,sys,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);pathlib.Path(sys.argv[1]).write_text(json.dumps({'pid':os.getpid(),'group':os.getpgrp()}));time.sleep(30)"
+child_path = root / (phase + ".child")
+subprocess.Popen([sys.executable, "-c", child_code, str(child_path)])
+while not child_path.exists():
+    time.sleep(.005)
+print("2.1.282 (Claude Code)" if phase == "version" else "--output-format stream-json --input-format stream-json --replay-user-messages", flush=True)
+if os.environ.get("WORKBENCH_PROBE_MODE") == "hang":
+    time.sleep(30)
+'''
+
+
+class CapabilityOwnedProcessTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.project = self.root / "project"
+        self.project.mkdir()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.records = self.root / "records"
+        self.records.mkdir()
+        self.native = self.bin / "claude"
+        self.native.write_text(f"#!{sys.executable}\n" + PROBE_WITH_CHILD)
+        self.native.chmod(0o700)
+        self.env = {**os.environ, "PATH": str(self.bin), "WORKBENCH_PROBE_RECORDS": str(self.records),
+                    "CLAUDE_CONFIG_DIR": str(self.root / ".claude"), "CODEX_HOME": str(self.root / ".codex")}
+        self.addCleanup(self.cleanup_groups)
+
+    def cleanup_groups(self):
+        for path in self.records.glob("*.leader"):
+            try:
+                os.killpg(int(path.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, ValueError):
+                pass
+
+    def assert_groups_stopped(self, expected):
+        from agent_workbench.runner import _group_has_running_members
+        paths = list(self.records.glob("*.child"))
+        self.assertEqual(len(paths), expected)
+        for path in paths:
+            record = json.loads(path.read_text())
+            deadline = time.monotonic() + 2
+            while _group_has_running_members(record["group"]) and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertFalse(_group_has_running_members(record["group"]))
+
+    def test_successful_version_and_help_clean_helpers_after_leader_exit(self):
+        profile = capabilities.inspect_launch({"harness": "claude"}, self.project, env=self.env, home=self.root)
+        self.assertEqual(profile["version"]["status"], "reported")
+        self.assertEqual(profile["version"]["version"], "2.1.282")
+        self.assertEqual(profile["help"]["status"], "reported")
+        self.assert_groups_stopped(2)
+
+    def test_timeout_cleans_sigterm_ignoring_helper_and_withholds_output(self):
+        report, text = capabilities._probe(self.native, ["--version"], self.project,
+                                           {**self.env, "WORKBENCH_PROBE_MODE": "hang"})
+        self.assertEqual(report["status"], "timed_out")
+        self.assertEqual(text, "")
+        self.assert_groups_stopped(1)
+
+    def test_sigterm_during_probe_cleans_group_and_prevents_next_probe(self):
+        code = "from pathlib import Path; import json,sys; from agent_workbench.capabilities import inspect_launch; print(json.dumps(inspect_launch({'harness':'claude'},Path(sys.argv[1]),home=Path(sys.argv[1]).parent)))"
+        driver = subprocess.Popen([sys.executable, "-c", code, str(self.project)],
+                                  cwd=Path(__file__).resolve().parents[1], env={**self.env, "WORKBENCH_PROBE_MODE": "hang"},
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            deadline = time.monotonic() + 3
+            while not (self.records / "version.child").exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue((self.records / "version.child").exists())
+            driver.send_signal(signal.SIGTERM)
+            stdout, stderr = driver.communicate(timeout=4)
+            self.assertEqual(driver.returncode, 0, stderr)
+            profile = json.loads(stdout)
+            self.assertEqual(profile["version"]["status"], "interrupted")
+            self.assertEqual(profile["help"]["status"], "interrupted")
+            self.assertFalse((self.records / "help.leader").exists())
+            self.assert_groups_stopped(1)
+        finally:
+            if driver.poll() is None:
+                driver.kill()
+                driver.communicate(timeout=3)
 
 
 if __name__ == "__main__":
