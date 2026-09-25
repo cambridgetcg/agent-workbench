@@ -4,22 +4,37 @@ Shared local tools for Codex and Claude Code: understand the active setup, save 
 workflow, control its execution, and hand useful context to the other harness.
 Python 3.11 or later on macOS or Linux; no runtime dependencies or service account.
 
-## Four roadmaps
-
-Each roadmap separates the first usable release from deeper native integration:
-
-| Track | First release | Roadmap |
-| --- | --- | --- |
-| Claude-style workflows in Codex | Saved dependencies, task results, explicit retry, mixed harness tasks | [Workflows](docs/roadmaps/workflows.md) |
-| Explicit run controls for Claude | Goal, status, stop, pause, queued guidance, time and launch limits | [Run control](docs/roadmaps/run-control.md) |
-| Shared status and doctor | Redacted auth/config metadata, provenance, loopback health probes | [Doctor](docs/roadmaps/doctor.md) |
-| Cross-harness continuity | Versioned JSON and Markdown handoffs, decisions, questions and evidence | [Handoffs](docs/roadmaps/handoffs.md) |
-
-## Use
+## Start a task
 
 From this checkout, run `python3 scripts/agent-workbench`. A local installation
 can expose the same script as `agent-workbench` on PATH. Both plugins share the
 same implementation and private state directory.
+
+```sh
+agent-workbench create --harness codex \
+  --prompt 'Read project instructions. Investigate the failing parser test and report a proposed fix.'
+# Create prints a run ID. Use it, or a unique prefix of at least 8 hex characters.
+agent-workbench plan RUN_ID
+agent-workbench run RUN_ID --timeout 900 --max-launches 1
+agent-workbench status RUN_ID
+agent-workbench timeline RUN_ID --limit 20
+```
+
+`create` saves an **unstarted** run for the current project directory. Use
+`--project PATH` to select another existing project. Choose the harness explicitly:
+`codex`, `claude`, `astra` or `astra-ultra`. `--prompt-file FILE` reads a prompt
+file; `--prompt-file -` reads bounded UTF-8 text from stdin. Optional `--name`,
+`--goal`, `--model` and `--effort` customize this single-task form. The default name
+comes from the first prompt line, capped at 160 characters. The goal defaults to
+the prompt, or to the run name for prompts longer than 20,000 characters; the task
+prompt stays intact. Native model and effort defaults apply unless overridden.
+
+Every command that takes `RUN_ID` accepts a full ID or an unambiguous lowercase
+hexadecimal prefix of at least eight characters. Ambiguous prefixes fail without
+acting. `list --project PATH` finds saved runs for a project; no command silently
+selects the latest run.
+
+## Check the setup
 
 ```sh
 agent-workbench doctor
@@ -36,6 +51,8 @@ Configured effort is labeled separately from observed request behavior.
 Each version includes its selected executable. If multiple CLI installations
 exist, check that path: a shell may select an older installation with different
 effort support. The runner preserves the PATH it inherits.
+
+## Save a workflow
 
 Create a workflow JSON file like this, changing the goal and prompts to the work
 you actually want performed:
@@ -62,12 +79,15 @@ you actually want performed:
 ```
 
 ```sh
-agent-workbench create workflow.json --project /path/to/project
-# The command prints RUN_ID. Substitute that value below.
-agent-workbench status RUN_ID
+agent-workbench create workflow.json
+# Or: agent-workbench create - < workflow.json
 agent-workbench plan RUN_ID
 agent-workbench run RUN_ID --timeout 900 --max-launches 4
 ```
+
+Manifest files and stdin use the same validation and 2,000,000-byte input limit.
+The manifest form cannot be combined with single-task prompt options. Both forms
+create a saved run without launching anything.
 
 Supported harnesses: `codex`, `claude`, `astra`, `astra-ultra`, and `command`.
 Agent tasks use a `prompt` and optional explicit `model` / `effort`. Astra
@@ -76,7 +96,8 @@ an `argv` array, for example `["python3", "-m", "unittest", "discover"]`, and
 executes without a shell. Optional `timeout_seconds` bounds an individual task.
 
 Tasks run **serially** in the declared project. A successor receives the goal
-and bounded predecessor results. Existing native authentication, hooks and
+and bounded predecessor results. Agent tasks also receive recent recorded notes
+as historical context. Existing native authentication, hooks and
 permissions apply; the runner adds no permission-bypass flags. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise
@@ -92,7 +113,15 @@ agent-workbench pause RUN_ID
 agent-workbench steer RUN_ID 'Keep the public API unchanged.'
 agent-workbench stop RUN_ID
 agent-workbench status RUN_ID --json
+agent-workbench timeline RUN_ID --limit 20 --json
 ```
+
+`status` shows task results, attempt and native session identifiers when recorded,
+dependency blockers, and explicit next actions. `timeline` shows a bounded view
+of recorded events and selected attempt metadata: the most recent 20 entries by
+default, with `--limit` accepting 1–200. It excludes raw logs and note or guidance
+bodies. Native session pointers identify a separate native resume action; they
+do not turn `run` into native conversation resumption.
 
 - Pause takes effect between tasks. A later `run` continues pending tasks.
 - Stop terminates the active subprocess group owned by this controller. It does
@@ -132,6 +161,15 @@ agent-workbench note RUN_ID --kind next 'Check compatibility before changing val
 agent-workbench export RUN_ID ./handoff.json
 agent-workbench import ./handoff.json --project /path/to/receiving/project
 ```
+
+Each agent task receives the eight most recent notes within an 8,000-character
+context limit, with omitted/truncated content identified. Stored notes remain
+unchanged. Notes matching the handoff credential checks are withheld from prompts
+with a visible notice. Other notes are redacted, quoted historical data; imported
+notes are labeled as
+unverified claims. They do not override the task prompt or queued guidance, and
+the runner does not open referenced files or mark tasks complete from a note.
+Use `steer` for instructions to the next agent task.
 
 Export creates JSON plus a readable Markdown sibling and refuses existing
 output files. It includes the plan, selected history and explicit notes; it
@@ -174,6 +212,15 @@ marketplace and `codex plugin add agent-workbench@personal` installs it.
 Start a new session after plugin installation. Ask either agent to use Agent
 Workbench for diagnostics, workflow management or a handoff. The plugin is not
 selected for ordinary coding requests merely because it is installed.
+
+## Roadmaps
+
+| Track | Implemented | Next |
+| --- | --- | --- |
+| [Workflows](docs/roadmaps/workflows.md) | Manifest or single-task creation, serial dependencies, mixed harnesses | Explicit isolation and bounded parallelism |
+| [Run control](docs/roadmaps/run-control.md) | Pause, stop, queued guidance, status, timeline and explicit continuation actions | Supported native control adapters |
+| [Doctor](docs/roadmaps/doctor.md) | Redacted local metadata, provenance and loopback health probes | Local request capture and capability checks |
+| [Handoffs](docs/roadmaps/handoffs.md) | Versioned artifacts, inspectable history and bounded note continuity | Project comparison and evidence reconciliation |
 
 ## Development
 

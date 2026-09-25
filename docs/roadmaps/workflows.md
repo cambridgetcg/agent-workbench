@@ -27,6 +27,23 @@ failed dependency blocks descendants; invalid graphs launch nothing; a completed
 task does not repeat when the run resumes. Fake native error terminal events
 cannot be reported as successful just because the process exited zero.
 
+## Implemented: less setup for ordinary tasks
+
+- `create --harness HARNESS --prompt TEXT` saves one task directly. Prompt files
+  and stdin are supported; JSON manifests remain available for task graphs.
+- Creation defaults to the current project and still validates and saves an
+  unstarted run. Harness selection is explicit, and native model/effort defaults
+  remain in force unless overridden.
+- Unique run ID prefixes of at least eight hexadecimal characters work across
+  CLI commands; project-filtered listing helps locate the intended run. No
+  implicit latest-run selection.
+- The next agent receives bounded recorded notes as well as predecessor results.
+  Notes remain historical context; imported claims do not establish fresh success.
+
+Acceptance: each input form produces a normal pending run, malformed or oversized
+input fails before creation, conflicting forms fail clearly, and ambiguous run
+prefixes perform no action.
+
 ## Next: independent work in parallel
 
 Add a configurable concurrency cap and explicit per-task working directories or

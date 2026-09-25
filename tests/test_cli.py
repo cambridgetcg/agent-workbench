@@ -4,12 +4,88 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agent_workbench.cli import main, plan_view, status_view
 from agent_workbench.store import Store
 
 
 class CliTests(unittest.TestCase):
+    def test_create_from_stdin_defaults_to_current_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = {"version": 1, "name": "Unicode 宇", "goal": "Preserve text", "tasks": [
+                {"id": "work", "harness": "codex", "prompt": "First line\nSecond 宇 line"}]}
+            output = io.StringIO()
+            with patch("pathlib.Path.cwd", return_value=root), patch("sys.stdin", io.StringIO(json.dumps(manifest))), contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--state-dir", str(root / "state"), "create", "-"]), 0)
+            state = Store(root / "state").read(output.getvalue().strip())
+            self.assertEqual(state["project"], str(root.resolve()))
+            self.assertEqual(state["tasks"][0]["prompt"], manifest["tasks"][0]["prompt"])
+            self.assertEqual(state["status"], "ready")
+            self.assertEqual(state["tasks"][0]["attempts"], [])
+
+    def test_single_task_authoring_preserves_explicit_choices(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prefix = ["--state-dir", str(root / "state"), "create", "--project", temp]
+            for source in (["--prompt", "Check the parser\nKeep Unicode 宇"], ["--prompt-file", "-"]):
+                output = io.StringIO()
+                with patch("sys.stdin", io.StringIO("Check the parser\nKeep Unicode 宇")), contextlib.redirect_stdout(output):
+                    self.assertEqual(main(prefix + ["--harness", "codex", "--model", "chosen-model", "--effort", "high"] + source), 0)
+                state = Store(root / "state").read(output.getvalue().strip())
+                self.assertEqual(state["name"], "Check the parser")
+                self.assertEqual(state["goal"], state["tasks"][0]["prompt"])
+                self.assertEqual(state["tasks"][0]["model"], "chosen-model")
+                self.assertEqual(state["tasks"][0]["effort"], "high")
+                self.assertEqual(state["tasks"][0]["attempts"], [])
+
+    def test_invalid_creation_never_saves_a_run(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prefix = ["--state-dir", str(root / "state"), "create", "--project", temp]
+            cases = [([], ""), (["--prompt", "No harness"], ""),
+                     (["--harness", "codex", "--prompt", ""], ""),
+                     (["-", "--harness", "codex"], "{}"), (["-"], "not json"),
+                     (["-"], "宇" * 700_000),
+                     (["--harness", "codex", "--prompt-file", "-"], "x" * 400_001)]
+            for options, stdin in cases:
+                with self.subTest(options=options), patch("sys.stdin", io.StringIO(stdin)), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(main(prefix + options), 1)
+            self.assertEqual(Store(root / "state").list_runs(), [])
+
+    def test_long_prompt_file_preserves_task_text_with_bounded_default_goal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prompt = "Inspect a detailed specification\n" + "宇" * 30_000
+            path = root / "prompt.txt"
+            path.write_text(prompt)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--state-dir", str(root / "state"), "create", "--project", temp,
+                                       "--harness", "codex", "--prompt-file", str(path)]), 0)
+            state = Store(root / "state").read(output.getvalue().strip())
+            self.assertEqual(state["tasks"][0]["prompt"], prompt)
+            self.assertEqual(state["goal"], "Inspect a detailed specification")
+
+    def test_short_reference_controls_and_project_filter(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            other = root / "other"
+            other.mkdir()
+            store = Store(root / "state")
+            manifest = {"version": 1, "name": "Ref", "goal": "Inspect", "tasks": [{"id": "one", "harness": "codex", "prompt": "Inspect"}]}
+            first = store.create(manifest, root)
+            store.create(manifest, other)
+            prefix = ["--state-dir", str(store.root)]
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(prefix + ["pause", first["id"][:8]]), 0)
+            self.assertEqual(store.read(first["id"])["status"], "paused")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(prefix + ["list", "--project", temp, "--json"]), 0)
+            self.assertEqual([state["id"] for state in json.loads(output.getvalue())], [first["id"]])
+
     def test_create_note_status_without_execution(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -51,6 +127,23 @@ class CliTests(unittest.TestCase):
             state["status"] = "paused"
             state["events"].append({"kind": "run_paused", "reason": "launch_limit"})
             self.assertEqual(status_view(state)["status_reason"], "launch_limit")
+            self.assertEqual(status_view(state)["next_actions"][0]["action"], "run")
+
+    def test_status_and_timeline_are_redacted_read_only_views(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "state")
+            state = store.create({"version": 1, "name": "api_key=syntheticcredential123456", "goal": "Inspect", "tasks": [
+                {"id": "one", "harness": "codex", "prompt": "Never launch"}]}, Path(temp))
+            prefix = ["--state-dir", str(store.root)]
+            for command in (["status", state["id"][:8]], ["status", state["id"], "--json"],
+                            ["list"], ["list", "--json"], ["timeline", state["id"], "--json"]):
+                output = io.StringIO()
+                with self.subTest(command=command), contextlib.redirect_stdout(output):
+                    self.assertEqual(main(prefix + command), 0)
+                self.assertNotIn("syntheticcredential123456", output.getvalue())
+            self.assertEqual(store.read(state["id"]), state)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(prefix + ["timeline", state["id"], "--limit", "0"]), 1)
 
     def test_invalid_manifest_has_controlled_error(self):
         with tempfile.TemporaryDirectory() as temp:

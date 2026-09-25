@@ -1,6 +1,6 @@
 {
   "name": "agent-workbench",
-  "version": "0.1.0+codex.20260925091818",
+  "version": "0.1.0+codex.20260925093456",
   "description": "Local diagnostics, durable workflows and portable handoffs for Codex and Claude Code.",
   "author": {
     "name": "Local developer"

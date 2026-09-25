@@ -28,17 +28,21 @@ task; stop leaves no owned child process; a second controller cannot steal a liv
 run; a simulated crash records interrupted work without automatically retrying
 it. An ordinary success record remains an observed process outcome.
 
-## Next: clearer continuation decisions
+## Implemented: clearer continuation decisions
 
-Add a concise run timeline using the native session identifiers already recorded.
-Present retry, next-task guidance and native session resume as distinct actions
-with their actual semantics.
+- `status` shows bounded result summaries, attempt/native session identifiers,
+  dependency blockers and explicit next actions.
+- `timeline RUN [--limit N] [--json]` presents selected recorded event fields and
+  attempt metadata: the latest 20 entries by default, with a limit of 1–200.
+  It omits raw logs, note text and guidance text.
+- Retry, continuation of pending tasks, next-task guidance and native session
+  pointers retain separate meanings. Neither view executes any of them.
 
 Acceptance: the view explains why each task is pending/blocked/interrupted, shows
 which attempt produced each result, and never represents next-task guidance as
 in-flight steering. A user can locate the native session without exporting logs.
 
-## Later: native control adapters
+## Next: native control adapters
 
 If a supported SDK exposes cancellation or in-flight steering, add a capability
 checked adapter while retaining the subprocess fallback. This integration uses

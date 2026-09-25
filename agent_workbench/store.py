@@ -180,6 +180,22 @@ class Store:
             raise ValueError("Invalid run state.")
         return state
 
+    def resolve_run_id(self, reference: str) -> str:
+        """Resolve an explicit ID or unique prefix, never an implicit latest run."""
+        if not isinstance(reference, str) or not re.fullmatch(r"[a-f0-9]{8,32}", reference):
+            raise ValueError("Use a run ID or a unique prefix of at least 8 hexadecimal characters.")
+        if RUN_ID.fullmatch(reference):
+            self.read(reference)
+            return reference
+        matches = sorted(path.name for path in self.runs.iterdir()
+                         if RUN_ID.fullmatch(path.name) and path.name.startswith(reference) and path.is_dir())
+        if not matches:
+            raise ValueError("No saved run matches that prefix. Use list to find a run.")
+        if len(matches) != 1:
+            raise ValueError("Run prefix is ambiguous; use more characters or the full run ID.")
+        self.read(matches[0])
+        return matches[0]
+
     def update(self, run_id: str, callback: Callable[[dict], None]) -> dict:
         directory = self.directory(run_id)
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)

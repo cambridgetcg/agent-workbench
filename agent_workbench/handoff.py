@@ -64,10 +64,15 @@ def _integer(value, *, maximum=1_000_000):
     return value
 
 
+def contains_credential_text(text: str) -> bool:
+    """Shared recognizable-credential check for handoffs and automatic context."""
+    inspected = re.sub(r"(?i)(?:\[redacted\]|<redacted>)", "", text)
+    return any(pattern.search(inspected) for pattern in SECRET_PATTERNS)
+
+
 def _check_secrets(value):
     if isinstance(value, str):
-        inspected = re.sub(r"(?i)(?:\[redacted\]|<redacted>)", "", value)
-        if any(pattern.search(inspected) for pattern in SECRET_PATTERNS):
+        if contains_credential_text(value):
             raise ValueError("Handoff contains credential-like text; remove or redact it before export or import.")
     elif isinstance(value, dict):
         for key, item in value.items():

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 
 from agent_workbench.store import Store, validate_manifest
@@ -60,6 +62,21 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.store.update(state["id"], fail)
         self.assertEqual(self.store.read(state["id"]), state)
+
+    def test_run_reference_resolution_is_explicit_and_unambiguous(self):
+        ids = ["12345678" + "a" * 24, "12345678" + "b" * 24]
+        for ident in ids:
+            with patch("agent_workbench.store.uuid.uuid4", return_value=SimpleNamespace(hex=ident)):
+                self.store.create(self.manifest, self.root)
+        self.assertEqual(self.store.resolve_run_id(ids[0]), ids[0])
+        self.assertEqual(self.store.resolve_run_id(ids[0][:9]), ids[0])
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            self.store.resolve_run_id("12345678")
+        with self.assertRaisesRegex(ValueError, "No saved run"):
+            self.store.resolve_run_id("87654321")
+        for value in ("latest", "123", "../escape", "A" * 32):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.store.resolve_run_id(value)
 
     def test_concurrent_updates_do_not_lose_notes(self):
         state = self.store.create(self.manifest, self.root)
