@@ -377,7 +377,21 @@ def _hermes(home, env):
                 for part in Path(selected).parts):
             selected = "[custom executable path withheld]"
         executables[name] = {"status": "present", "selected_executable": selected}
-    profile = home / ".hermes/profiles/astra-ultra"
+    # HERMES_HOME can be either an installation root or an already-selected
+    # named profile. Inspect Astra Ultra only within that same installation.
+    configured_home = env.get("HERMES_HOME")
+    if not isinstance(configured_home, str) or not configured_home.strip():
+        hermes_home = home / ".hermes"
+    elif configured_home == "~":
+        hermes_home = home
+    elif configured_home.startswith("~/"):
+        hermes_home = home / configured_home[2:]
+    else:
+        hermes_home = Path(configured_home)
+        if not hermes_home.is_absolute():
+            hermes_home = Path.cwd() / hermes_home
+    root = hermes_home.parent.parent if hermes_home.parent.name == "profiles" else hermes_home
+    profile = root / "profiles/astra-ultra"
     binding = profile / "workbench-subscription.json"
     auth = {"status": "not_configured", "refresh_performed": False}
     if binding.exists():

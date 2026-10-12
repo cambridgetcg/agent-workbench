@@ -54,8 +54,13 @@ agent-workbench explain --harness claude --project /path/to/project
 The default doctor reads selected metadata and checks installed versions, except
 Hermes: its version command can check for updates, so doctor reports presence only. It
 does not log in, refresh credentials, make inference requests, or inspect other
-processes' environments. `--probe` sends authenticated health requests only to
-existing loopback gateways. It never follows a redirect to another host.
+processes' environments. Hermes profile discovery respects `HERMES_HOME`, whether
+it names a relocated installation root or a directory under `profiles/`. The
+Astra Ultra profile and its optional subscription binding are checked within
+that installation only; an explicit custom home never falls back to another
+installation's binding. An unset or blank value keeps the `~/.hermes` default.
+`--probe` sends authenticated health requests only to existing loopback gateways.
+It never follows a redirect to another host.
 Configuration shown is a partial local view: native session flags, managed
 policies and another process's environment may change the effective settings.
 Configured effort is labeled separately from observed request behavior.
