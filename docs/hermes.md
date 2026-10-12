@@ -102,6 +102,18 @@ retain native defaults. Workbench rejects the Claude-specific `ultracode` effort
 for Hermes and currently exposes `low`, `medium`, `high`, `xhigh`, `max`, `ultra`.
 Hermes's additional `none` and `minimal` settings remain available in Hermes.
 
+The runner supplies the prepared task workspace as both process cwd and
+`TERMINAL_CWD`. Hermes tools and project-instruction discovery prefer that
+environment value, so an inherited controller directory must not override the
+task's project or retained worktree. Read-only mode remains a declaration, not
+a sandbox. Native unattended approval rules remain unchanged.
+
+`doctor` resolves Astra Ultra within the installation selected by `HERMES_HOME`,
+whether it names the installation root or an already-selected profile. A
+`subscription_binding: not_configured` result describes only the optional
+Workbench binding file; it does not prove native provider authentication is
+missing or broken. Verify authentication through the intended native workflow.
+
 Success requires process exit zero and exactly one valid native terminal result
 with exit code zero, text and a session identifier. Recoverable individual tool
 errors do not prematurely end a task. When Hermes appends its file-mutation

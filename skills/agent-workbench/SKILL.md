@@ -34,6 +34,10 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   with `run --timeout`, default 1800 seconds, longer still; `run` warns when it
   cannot reach a budget) map to Hermes chat flags; failed native file edits
   surface as result warnings.
+  Check the native tool workspace, not just subprocess cwd: Hermes prefers
+  `TERMINAL_CWD`, so the runner binds it to the prepared task path, including
+  worktrees. Reproduce workspace issues with relative file access rather than
+  masking them with an explicit tool workdir. Keep native approval safeguards.
   Use the token helper's `--check` interface for auth diagnostics; its normal
   stdout is a private credential protocol and must never be run in a terminal
   or included in logs, prompts or reports. See the [Hermes integration guide](../../docs/hermes.md).

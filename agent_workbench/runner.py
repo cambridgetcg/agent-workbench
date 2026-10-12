@@ -734,6 +734,11 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted, ownership):
                     ownership = current_lease()
                     if ownership is None:
                         raise RuntimeError("Worktree preparation did not retain checkout ownership")
+                if task["harness"] in _HERMES:
+                    # Hermes tools and project instructions prefer TERMINAL_CWD
+                    # over process cwd. Do not inherit the controller's workspace;
+                    # use the prepared path, including a task-owned worktree.
+                    environment["TERMINAL_CWD"] = workspace["path"]
                 profile = inspect_launch(task, Path(workspace["path"]), env=environment, update_check=False)
                 profile["native_sandbox"] = native_sandbox(task)
                 profile["host_session_environment_removed"] = removed

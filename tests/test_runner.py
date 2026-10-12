@@ -91,6 +91,9 @@ if mode == "MALFORMED":
 if mode == "INVALID_EVENT_TYPE":
     print(json.dumps({"type": ["not a string"]}))
 text = "observed synthetic result"
+if mode == "HERMES_WORKSPACE":
+    terminal_cwd = pathlib.Path(os.environ.get("TERMINAL_CWD", os.getcwd()))
+    text = (terminal_cwd / "workspace-marker.txt").read_text()
 if mode == "SECRET":
     text = "Bearer pretend-sensitive-token api_key=synthetic-key sk-secretvalue12345 " + "x" * 7000
 if mode == "MUTATION_FOOTER":
@@ -265,6 +268,56 @@ class RunnerTests(unittest.TestCase):
             self.assertNotIn(sentinel, public)
         run_workflow(self.store, run_id)
         self.assertEqual(len(self.calls()), 3)
+
+    def test_hermes_tools_use_task_workspace_not_parent_terminal_cwd(self):
+        parent_workspace = self.root / "parent-workspace"
+        parent_workspace.mkdir()
+        (parent_workspace / "workspace-marker.txt").write_text("wrong parent workspace")
+        (self.project / "workspace-marker.txt").write_text("declared task workspace")
+        with patch.dict(os.environ, {"TERMINAL_CWD": str(parent_workspace)}):
+            for harness in ("hermes", "hermes-astra-ultra"):
+                for workspace in ("shared", "read-only"):
+                    with self.subTest(harness=harness, workspace=workspace):
+                        run_id = self.create([self.agent(harness=harness, workspace=workspace,
+                                                        prompt="HERMES_WORKSPACE")])
+                        state = run_workflow(self.store, run_id)
+                        self.assertEqual(state["status"], "succeeded")
+                        self.assertEqual(state["tasks"][0]["result"]["summary"], "declared task workspace")
+                        self.assertEqual(os.environ["TERMINAL_CWD"], str(parent_workspace))
+
+    def test_hermes_tools_use_the_prepared_worktree_snapshot(self):
+        marker = self.project / "workspace-marker.txt"
+        marker.write_text("committed task workspace")
+        for arguments in (("init", "-q"), ("add", "workspace-marker.txt"),
+                          ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                           "commit", "-qm", "workspace fixture")):
+            subprocess.run(["git", "-C", str(self.project), *arguments],
+                           capture_output=True, text=True, check=True)
+        marker.write_text("uncommitted source workspace")
+        with patch.dict(os.environ, {"TERMINAL_CWD": str(self.project)}):
+            for harness in ("hermes", "hermes-astra-ultra"):
+                with self.subTest(harness=harness):
+                    run_id = self.create([self.agent(harness=harness, workspace="worktree",
+                                                    prompt="HERMES_WORKSPACE")])
+                    state = run_workflow(self.store, run_id)
+                    self.assertEqual(state["status"], "succeeded")
+                    result = state["tasks"][0]["result"]
+                    self.assertEqual(result["summary"], "committed task workspace")
+                    self.assertNotEqual(Path(result["workspace"]["path"]), self.project.resolve())
+                    self.assertEqual(os.environ["TERMINAL_CWD"], str(self.project))
+                    self.assertEqual(marker.read_text(), "uncommitted source workspace")
+
+    def test_other_harnesses_retain_the_inherited_terminal_cwd(self):
+        parent_workspace = self.root / "parent-workspace"
+        parent_workspace.mkdir()
+        (parent_workspace / "workspace-marker.txt").write_text("native environment unchanged")
+        with patch.dict(os.environ, {"TERMINAL_CWD": str(parent_workspace)}):
+            for harness in ("codex", "claude", "astra", "astra-ultra"):
+                with self.subTest(harness=harness):
+                    run_id = self.create([self.agent(harness=harness, prompt="HERMES_WORKSPACE")])
+                    state = run_workflow(self.store, run_id)
+                    self.assertEqual(state["status"], "succeeded")
+                    self.assertEqual(state["tasks"][0]["result"]["summary"], "native environment unchanged")
 
     def test_hermes_only_forwards_explicit_model_and_reasoning(self):
         run_id = self.create([
