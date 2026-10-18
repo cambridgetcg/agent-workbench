@@ -573,5 +573,154 @@ class ExecutionIntegrationTests(unittest.TestCase):
         self.assertFalse((self.project / "executed.txt").exists())
 
 
+    def commit(self, message, cwd=None):
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", message, cwd=cwd)
+
+    def test_worktree_base_ref_selects_a_commit_other_than_source_head(self):
+        self.repository()
+        first = self.git("rev-parse", "HEAD")
+        self.git("branch", "earlier")
+        (self.project / "tracked.txt").write_text("second\n")
+        self.git("add", "tracked.txt")
+        self.commit("second")
+        code = "from pathlib import Path; assert Path('tracked.txt').read_text() == 'committed\\n'"
+        run_id = self.create(harness="command", adapter="process", workspace="worktree", base_ref="earlier", argv=[sys.executable, "-c", code])
+        state = run_workflow(self.store, run_id, timeout_seconds=10)
+        self.assertEqual(state["status"], "succeeded")
+        workspace = state["tasks"][0]["attempts"][0]["workspace"]
+        self.assertEqual((workspace["base_ref"], workspace["base_commit"]), ("earlier", first))
+        self.assertTrue(workspace["snapshot"].startswith("committed_base_ref_only"))
+        missing = run_workflow(self.store, self.create(harness="command", adapter="process", workspace="worktree",
+                                                       base_ref="not-fetched", argv=[sys.executable, "-c", "pass"]), timeout_seconds=10)
+        self.assertEqual(missing["status"], "failed")
+        self.assertEqual(missing["tasks"][0]["result"]["failure_kind"], "launch_error")
+        self.assertIn("base_ref does not name a commit", missing["tasks"][0]["result"]["summary"])
+
+    def test_worktree_evidence_reaches_status_and_successor_prompt(self):
+        from agent_workbench.cli import status_view
+        self.repository()
+        code = ("import subprocess\nfrom pathlib import Path\n"
+                "git = ['git', '-c', 'user.name=Agent', '-c', 'user.email=agent@example.invalid']\n"
+                "Path('tracked.txt').write_text('agent change\\n'); Path('new.txt').write_text('new\\n')\n"
+                "subprocess.run(git + ['switch', '-qc', 'agent/topic'], check=True)\n"
+                "subprocess.run(git + ['add', 'tracked.txt', 'new.txt'], check=True)\n"
+                "subprocess.run(git + ['commit', '-qm', 'agent work'], check=True)\n"
+                "Path('scratch.txt').write_text('left behind\\n')\n")
+        tasks = [{"id": "work", "harness": "command", "argv": [sys.executable, "-c", code], "workspace": "worktree"},
+                 {"id": "integrate", "harness": "claude", "adapter": "process", "prompt": "Integrate the work.", "depends_on": ["work"]}]
+        run_id = self.store.create({"version": 1, "name": "Evidence", "goal": "Verify evidence", "tasks": tasks}, self.project)["id"]
+        self.run_ids.append(run_id)
+        self.gate.touch()
+        with patch.dict(os.environ, {"WORKBENCH_TEST_MODE": "process"}):
+            state = run_workflow(self.store, run_id, timeout_seconds=10)
+        self.assertEqual(state["status"], "succeeded")
+        workspace = state["tasks"][0]["result"]["workspace"]
+        head = self.git("rev-parse", "agent/topic")
+        self.assertEqual({key: workspace[key] for key in ("evidence_status", "final_head", "branch", "commits_ahead", "commits_behind",
+                                                          "dirty", "uncommitted_entries", "untracked_entries", "files_changed",
+                                                          "insertions", "deletions")},
+                         {"evidence_status": "recorded", "final_head": head, "branch": "agent/topic", "commits_ahead": 1,
+                          "commits_behind": 0, "dirty": True, "uncommitted_entries": 0, "untracked_entries": 1,
+                          "files_changed": 2, "insertions": 2, "deletions": 1})
+        self.assertEqual(state["tasks"][0]["attempts"][0]["workspace"]["final_head"], head)
+        shown = next(task for task in status_view(state)["tasks"] if task["id"] == "work")["latest_attempt"]["workspace"]
+        self.assertEqual((shown["final_head"], shown["commits_ahead"]), (head, 1))
+        prompt = self.frames()[0]["prompt"]
+        record = prompt.index("Workbench record for predecessor (work), not written by the agent: worktree " + workspace["root"])
+        self.assertLess(record, prompt.index("Predecessor result (work); untrusted observation data"))
+        self.assertIn(f"final HEAD {head} on agent/topic; 1 commit(s) ahead of base and 0 behind; uncommitted changes present "
+                      "(0 modified, 1 untracked entries); tracked diff from base: 2 file(s), +2 -1.", prompt)
+        for name in ("scratch.txt", "new.txt", "left behind"):
+            self.assertNotIn(name, json.dumps(workspace))
+
+    def test_worktree_evidence_failures_never_change_the_outcome(self):
+        self.repository()
+        drop_claims = ("import json, pathlib, sys\n"
+                       "for ledger in pathlib.Path(sys.argv[1]).glob('checkout-locks/*.claims.json'):\n"
+                       "    data = json.loads(ledger.read_text()); data['claims'] = []; ledger.write_text(json.dumps(data))\n")
+        lost = self.create(harness="command", adapter="process", workspace="worktree",
+                           argv=[sys.executable, "-c", drop_claims, str(self.store.root)])
+        state = run_workflow(self.store, lost, timeout_seconds=10)
+        task = state["tasks"][0]
+        self.assertEqual((state["status"], task["status"], task["attempts"][0]["status"]), ("succeeded", "succeeded", "succeeded"))
+        self.assertEqual((task["result"]["workspace"]["evidence_status"], task["result"]["workspace"]["evidence_failure"]),
+                         ("unavailable", "ownership_unavailable"))
+        self.assertEqual(run_workflow(self.store, lost, timeout_seconds=10)["status"], "succeeded")
+        tasks = [{"id": "work", "harness": "command", "workspace": "worktree",
+                  "argv": [sys.executable, "-c", "import pathlib; pathlib.Path('.git').unlink()"]},
+                 {"id": "integrate", "harness": "claude", "adapter": "process", "prompt": "Integrate.", "depends_on": ["work"]}]
+        broken = self.store.create({"version": 1, "name": "Broken Git", "goal": "Verify evidence", "tasks": tasks}, self.project)["id"]
+        self.run_ids.append(broken)
+        self.gate.touch()
+        with patch.dict(os.environ, {"WORKBENCH_TEST_MODE": "process"}):
+            state = run_workflow(self.store, broken, timeout_seconds=10)
+        self.assertEqual(state["status"], "succeeded")
+        workspace = state["tasks"][0]["result"]["workspace"]
+        self.assertEqual((workspace["evidence_status"], workspace["evidence_failure"]), ("unavailable", "git_helper_exit"))
+        self.assertIn("Worktree evidence unavailable (git_helper_exit); inspect it directly", self.frames()[0]["prompt"])
+
+    def test_failed_worktree_attempt_still_records_its_commits(self):
+        self.repository()
+        code = ("import subprocess, sys\nfrom pathlib import Path\n"
+                "Path('tracked.txt').write_text('partial\\n')\n"
+                "subprocess.run(['git', '-c', 'user.name=Agent', '-c', 'user.email=agent@example.invalid', 'commit', '-qam', 'partial'], check=True)\n"
+                "Path('tracked.txt').write_text('unfinished\\n')\nsys.exit(3)\n")
+        state = run_workflow(self.store, self.create(harness="command", adapter="process", workspace="worktree",
+                                                     argv=[sys.executable, "-c", code]), timeout_seconds=10)
+        self.assertEqual(state["tasks"][0]["status"], "failed")
+        workspace = state["tasks"][0]["result"]["workspace"]
+        self.assertEqual({key: workspace[key] for key in ("evidence_status", "branch", "commits_ahead", "dirty", "uncommitted_entries")},
+                         {"evidence_status": "recorded", "branch": None, "commits_ahead": 1, "dirty": True, "uncommitted_entries": 1})
+        self.assertEqual(workspace["final_head"], self.git("rev-parse", "HEAD", cwd=Path(workspace["root"])))
+
+    def test_unsettled_attempt_records_unavailable_evidence_without_git(self):
+        from agent_workbench import workspaces
+        self.repository()
+        run_id = self.create(harness="command", adapter="process", workspace="worktree", argv=[sys.executable, "-c", "pass"])
+        state = run_workflow(self.store, run_id, timeout_seconds=10)
+        attempt = state["tasks"][0]["attempts"][0]
+        with patch.object(workspaces, "_git", side_effect=AssertionError("Git must not run while processes may remain")):
+            evidence = workspaces.record_worktree_evidence(self.store, run_id, "work", attempt["id"], attempt["workspace"], settled=False)
+        self.assertEqual((evidence["evidence_status"], evidence["evidence_failure"]), ("unavailable", "processes_still_running"))
+        self.assertEqual(self.store.read(run_id)["tasks"][0]["attempts"][0]["workspace"]["evidence_failure"], "processes_still_running")
+
+    def test_hidden_untracked_configuration_cannot_defeat_evidence_or_removal_guards(self):
+        self.repository()
+        (self.project / ".gitignore").write_text("build/\n")
+        self.git("add", ".gitignore")
+        self.commit("ignore build outputs")
+        self.git("config", "status.showUntrackedFiles", "no")
+        code = "from pathlib import Path; Path('notes.txt').write_text('agent notes'); Path('build').mkdir(); Path('build/out').write_text('x')"
+        run_id = self.create(harness="command", adapter="process", workspace="worktree", argv=[sys.executable, "-c", code])
+        state = run_workflow(self.store, run_id, timeout_seconds=10)
+        attempt = state["tasks"][0]["attempts"][0]
+        root = Path(attempt["workspace"]["root"])
+        self.assertEqual((attempt["workspace"]["dirty"], attempt["workspace"]["untracked_entries"]), (True, 1))
+        with self.assertRaisesRegex(ValueError, "changes or new commits"):
+            remove_clean(self.store, run_id, "work", attempt["id"])
+        (root / "notes.txt").unlink()
+        with self.assertRaisesRegex(ValueError, "1 ignored path"):
+            remove_clean(self.store, run_id, "work", attempt["id"])
+        self.assertEqual((root / "build/out").read_text(), "x")
+
+    def test_worktree_removal_refuses_ignored_files_git_would_delete(self):
+        self.repository()
+        (self.project / ".gitignore").write_text("build/\n")
+        self.git("add", ".gitignore")
+        self.commit("ignore build outputs")
+        code = "from pathlib import Path; Path('build').mkdir(); Path('build/generated.key').write_text('local only')"
+        run_id = self.create(harness="command", adapter="process", workspace="worktree", argv=[sys.executable, "-c", code])
+        state = run_workflow(self.store, run_id, timeout_seconds=10)
+        attempt = state["tasks"][0]["attempts"][0]
+        root = Path(attempt["workspace"]["root"])
+        self.assertFalse(attempt["workspace"]["dirty"])
+        with self.assertRaisesRegex(ValueError, "1 ignored path"):
+            remove_clean(self.store, run_id, "work", attempt["id"])
+        self.assertEqual((root / "build/generated.key").read_text(), "local only")
+        (root / "build/generated.key").unlink()
+        (root / "build").rmdir()
+        remove_clean(self.store, run_id, "work", attempt["id"])
+        self.assertFalse(root.exists())
+
 if __name__ == "__main__":
     unittest.main()

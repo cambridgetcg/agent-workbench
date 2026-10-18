@@ -21,7 +21,8 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   `--project PATH` selects another. `create` saves an unstarted run;
   `run` invokes real native agents or argv commands in the declared project.
   Preserve the user's chosen harness, model, effort and task scope. Creation or
-  import alone is not a request to execute. The runner adds no bypass flags.
+  import alone is not a request to execute. The runner adds no bypass flags; its
+  only sandbox flag is a Codex task's `sandbox` or the read-only one it implies.
   Use `plan RUN_ID` to inspect task definitions, notes and imported provenance.
   Run references accept unique prefixes of at least eight characters;
   `list --project PATH` finds runs for a project.
@@ -29,15 +30,23 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   adapter. They require a Hermes version advertising `chat --query-file` and
   `--format stream-json`. The Ultra profile uses native Hermes tools and sends
   Astra's supported `max` wire effort. Hermes does not inherit Claude Ultracode.
+  Optional `max_turns`, `skills` and `run_budget_seconds` (below `timeout_seconds`,
+  with `run --timeout` longer still) map to Hermes chat flags; failed native file
+  edits surface as result warnings.
   Use the token helper's `--check` interface for auth diagnostics; its normal
   stdout is a private credential protocol and must never be run in a terminal
   or included in logs, prompts or reports. See the [Hermes integration guide](../../docs/hermes.md).
 - Runs are serial by default; `run --jobs N` allows 1–16 workers subject to
   dependencies and checkout ownership. `shared` writers serialize; declared
-  `read-only` tasks may overlap but are not sandboxed. `worktree` gives each
-  attempt a retained committed-HEAD snapshot without uncommitted source files.
-  Dependencies do not merge worktrees. Use `workspaces RUN` to inspect ownership;
-  `workspace-remove RUN TASK ATTEMPT` removes only an inactive unchanged owned tree.
+  `read-only` tasks may overlap. Codex read-only tasks get Codex's read-only
+  sandbox; other Codex tasks may choose one with `sandbox`. Other harnesses are
+  not sandboxed.
+  `worktree` gives each attempt a retained snapshot of committed HEAD, or of an
+  explicit `base_ref` such as `origin/main`, without uncommitted source files.
+  Workbench records each attempt's final HEAD, branch and change counts and gives
+  dependent prompts that record as a separate block. Dependencies do not merge worktrees. Use
+  `workspaces RUN` to inspect ownership; `workspace-remove RUN TASK ATTEMPT`
+  removes only an inactive unchanged owned tree without ignored files.
   Checkout leases cover Workbench controllers sharing the same state root.
 - Time and launch limits bound one invocation, not tokens or spend. `pause`
   drains active tasks; `stop` terminates owned active process groups. Failure

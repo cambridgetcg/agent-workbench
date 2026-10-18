@@ -84,5 +84,17 @@ class OwnedProcessTests(unittest.TestCase):
             self.assertTrue(not state or state.startswith("Z"), state)
 
 
+class NativeEnvironmentTests(unittest.TestCase):
+    def test_host_session_variables_are_removed_by_name_and_messaging_prefix(self):
+        from agent_workbench.processes import host_session_variables, native_environment
+        host = {"CLAUDECODE": "1", "CLAUDE_PID": "1", "CLAUDE_CODE_MESSAGING_TOKEN": "private",
+                "CLAUDE_CODE_MESSAGING_FUTURE": "private", "CLAUDE_CODE_USE_BEDROCK": "1",
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000", "OPENAI_API_KEY": "kept", "PATH": "/bin"}
+        self.assertEqual(native_environment(host), {"CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+                                                    "OPENAI_API_KEY": "kept", "PATH": "/bin"})
+        self.assertEqual(host_session_variables(host), ["CLAUDECODE", "CLAUDE_CODE_MESSAGING_FUTURE",
+                                                        "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_PID"])
+
+
 if __name__ == "__main__":
     unittest.main()

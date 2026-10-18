@@ -31,6 +31,8 @@ elif mode in ("stdout-flood", "stderr-flood"):
     descriptor = 1 if mode == "stdout-flood" else 2
     while True:
         os.write(descriptor, b"PRIVATE_HELPER_BODY" * 4096)
+elif mode == "optional-locks":
+    print(os.environ.get("GIT_OPTIONAL_LOCKS", "unset"), flush=True)
 else:
     print("selected-metadata", flush=True)
 '''
@@ -96,6 +98,10 @@ class GitHelperSafetyTests(unittest.TestCase):
         self.assertNotIn("PRIVATE_HOOK_TOKEN", str(caught.exception))
         self.assertNotIn("sk-testprivatedata123", str(caught.exception))
         self.assert_child_stopped()
+
+    def test_helpers_never_take_optional_index_locks(self):
+        os.environ["WORKBENCH_GIT_FIXTURE"] = "optional-locks"
+        self.assertEqual(workspaces._git(self.root, "status", "--porcelain"), "0")
 
     def test_stdout_and_stderr_capture_are_bounded(self):
         for mode in ("stdout-flood", "stderr-flood"):

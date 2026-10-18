@@ -1,4 +1,4 @@
-# Implementation contract: 0.3.0
+# Implementation contract: 0.5.0
 
 Python package: `agent_workbench/`. Public CLI: `agent-workbench`.
 
@@ -30,7 +30,13 @@ Optional model and effort are explicit user choices. Command tasks run argv
 without a shell. Optional task `timeout_seconds` bounds one task.
 Optional `adapter` is `process` (default) or `duplex`; duplex requires a Claude,
 Astra or Astra Ultra task. Optional `workspace` is `shared` (default), `read-only`
-or `worktree`. These fields survive export/import and single-task creation.
+or `worktree`. A worktree task may set `base_ref`, one Git revision without
+option dashes, whitespace or ranges. A Codex task may set `sandbox`
+(`read-only`, `workspace-write`, `danger-full-access`); a read-only workspace
+implies and requires `read-only`. Hermes tasks may set `max_turns` (1–10000),
+`skills` (1–32 unique names) and `run_budget_seconds` (an integer below any
+`timeout_seconds`). These fields survive export/import and single-task creation;
+`store.TASK_FIELDS` is the single field list.
 
 State: `{version:1, id, name, goal, project, created_at, updated_at, revision,
 status:'ready', tasks:[...], events:[], notes:[], control:{stop_requested:false,
@@ -57,6 +63,16 @@ or launch limit, and cancels active peers on failure without inventing an OS
 signal. A busy checkout pauses with `workspace_busy`, without an attempt or retry.
 Stopping terminates owned active subprocess groups. Guidance applies to the next
 agent task that starts and is explicitly not in-flight native steering.
+Agent prompts include the workflow goal only when it differs from the task
+prompt. A successor's predecessor block adds Workbench's recorded worktree
+evidence as a separate Workbench-labelled block before the untrusted predecessor
+summary, or says that evidence is unavailable. `native_sandbox(task)` returns the
+Codex sandbox flag value or None. `processes.native_environment()` omits the
+launching Claude Code session's identity and messaging variables
+(`HOST_SESSION_ENV` plus every `CLAUDE_CODE_MESSAGING_` name) for tasks, plugin
+evaluations and mod checks; a task's launch record lists the removed names.
+Launch inspection passes `update_check=False`, so Hermes's update-checking
+`--version` is not probed during runs.
 Each agent prompt receives at most eight recent notes within an 8,000-character
 continuity section, including framing and omission/truncation notices. Notes are
 redacted and quoted as historical data; imported notes are unverified claims.
@@ -71,7 +87,9 @@ interrupted task for retry; do not rerun succeeded descendants silently.
 `recover_run(store, run_id) -> dict` marks stale running attempts interrupted,
 only after proving controller lock is available; does not run them.
 
-Native CLI commands use prompt stdin and no bypass flags. Codex exec JSON;
+Native CLI commands use prompt stdin and no bypass flags. The only sandbox flag
+is a Codex task's explicit `sandbox` (`danger-full-access` turns Codex's sandbox
+off) or the `read-only` implied by a read-only workspace. Codex exec JSON;
 Claude print stream-json. Every attempt records selected executable/version,
 capability/configuration evidence in private `launch.json`; launch uses the
 selected absolute entry point. Astra wraps Claude. Do not force model/effort unless
@@ -92,18 +110,30 @@ not just exit code zero with a JSON error. Command success is exit code zero.
   controller lock. Explicit recovery may stop matching recorded process groups;
   unverified surviving groups keep the checkout unavailable. No work is replayed.
 - `prepare(store, run_id, task, attempt_id, project) -> dict` returns attempt
-  workspace metadata. Worktrees are detached committed-HEAD snapshots; the
-  relative project path is preserved and uncommitted files are not copied.
+  workspace metadata. Worktrees are detached snapshots of the committed HEAD or
+  of `base_ref` (resolved with `rev-parse --verify --end-of-options REF^{commit}`);
+  the relative project path is preserved and uncommitted files are not copied.
   Planned ownership is saved before checkout creation. Preparation failures
   retain the recorded location and a fixed failure code for inspection.
+- `record_worktree_evidence(store, run_id, task_id, attempt_id, workspace, *, settled=True) -> dict`
+  runs after the runner has terminated the attempt's process group and records
+  `final_head`, `branch`, `commits_ahead`/`commits_behind`, `dirty`, entry counts
+  and tracked diff counts against the base. It stores no file names or contents
+  and never raises for Git, ownership or helper failures: those, and
+  `settled=False` (`processes_still_running`), record `evidence_status:
+  "unavailable"` with an `evidence_failure` code, and the task outcome stands.
+  Status calls pass `--untracked-files=normal` so local Git configuration cannot
+  hide untracked files.
 - `workspace_view(state) -> dict` lists recorded paths, ownership and retention.
 - `remove_clean(store, run_id, task_id, attempt_id) -> dict` takes the controller
   lock and removes only an inactive, unchanged, owned worktree at its recorded
   base commit while also holding the checkout's exclusive lease, including
-  against other runs using a retained worktree. It refuses dirty trees, new commits, incomplete preparation and
-  ownership mismatches. Git helpers use bounded output and owned process groups.
+  against other runs using a retained worktree. It refuses dirty trees, new commits, ignored files,
+  incomplete preparation and ownership mismatches. Git helpers use bounded output, owned
+  process groups and `GIT_OPTIONAL_LOCKS=0`.
 
-Read-only is a declaration, not OS enforcement. Worktrees are retained by default.
+Read-only is a declaration, not OS enforcement, except that Codex receives its
+native read-only sandbox. Worktrees are retained by default.
 Dependency completion never merges changes or copies predecessor worktrees.
 
 ## Native stream/control (`native.py`, `bridge.py`)
@@ -136,8 +166,13 @@ results. Hermes has no Workbench duplex handshake; stop owns the process group
 and grants native detached-tool cleanup time before escalation.
 
 `PublicJournal` batches selected events into atomic state; it keeps the latest
-2,000 native events and tracks dropped counts. `EventTail` reads growing private
-process-adapter logs incrementally. Neither publishes raw transcript content.
+2,000 native events and tracks dropped counts. `flush(force=False)` writes only
+after 100 pending events or 0.25 seconds; lifecycle boundaries call the forced
+default. `EventTail` reads growing private process-adapter logs incrementally and
+keeps one Hermes `native_message` per contiguous run of text deltas. Neither
+publishes raw transcript content. A Hermes result whose text carries Hermes's own
+"File-mutation verifier: N file edit(s) FAILED" footer (English wording) adds a
+result warning; it does not change the native outcome.
 
 `request_native(store, run_id, task_id, action, text=None, request_id=None) -> dict`
 addresses an initialized running duplex attempt whose input remains open. Actions
@@ -295,7 +330,9 @@ explain [--project PATH] [--harness HARNESS] [--json]
 create [MANIFEST] [--project PATH]
 create --harness codex|claude|astra|astra-ultra|hermes|hermes-astra-ultra (--prompt TEXT | --prompt-file FILE|-)
        [--project PATH] [--name TEXT] [--goal TEXT] [--model MODEL] [--effort EFFORT]
-       [--adapter process|duplex] [--workspace shared|read-only|worktree]
+       [--adapter process|duplex] [--workspace shared|read-only|worktree] [--base-ref REF]
+       [--sandbox read-only|workspace-write|danger-full-access] [--max-turns N]
+       [--skill NAME]... [--run-budget SECONDS] [--timeout-seconds SECONDS]
 list [--project PATH] [--json]
 status RUN [--json] [--metadata]
 launch RUN TASK [--attempt ATTEMPT]

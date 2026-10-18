@@ -39,7 +39,7 @@ _FLAGS = {"--output-format", "--input-format", "--resume", "--continue", "--work
           "--background", "--include-hook-events", "--forward-subagent-text", "--safe-mode", "--bare",
           "--setting-sources", "--settings", "--plugin-dir", "--effort", "--model", "--json",
           "--no-daemon", "--sandbox", "--ask-for-approval", "--replay-user-messages",
-          "--format", "--query-file", "--reasoning"}
+          "--format", "--query-file", "--reasoning", "--max-turns", "--skills", "--run-budget"}
 
 
 def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
@@ -157,7 +157,8 @@ def _help_capability(help_info: dict, flags: set[str], *required: str) -> dict:
     return _capability("unverified", "not advertised by inspected help; absence is not a runtime test")
 
 
-def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: Path | None = None) -> dict:
+def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: Path | None = None,
+                   update_check: bool = True) -> dict:
     """Resolve an executable and record selected, sanitized capability evidence.
 
     No command task or Astra wrapper is invoked during inspection. Known native
@@ -165,6 +166,8 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
     ``executable`` is the absolute selected entry point for a later launch.
     Wrappers still resolve their own children; the nested ``native`` record
     describes the current PATH candidate, not a guaranteed wrapper launch.
+    Hermes's ``--version`` also checks upstream for updates, so launches pass
+    ``update_check=False`` and leave that version unprobed.
     """
     env = dict(os.environ if env is None else env)
     home = Path.home() if home is None else Path(home)
@@ -211,9 +214,13 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
     version_info, help_info, help_text = {"status": "unavailable", "version": None}, {"status": "unavailable"}, ""
     chat_text = ""
     if selected is not None and native is not None:
-        version_info, text = _probe(native, ["--version"], project, env)
-        match = _SEMVER.search(text)
-        version_info["version"] = match.group(1) if match and version_info["status"] == "reported" else None
+        if hermes and not update_check:
+            version_info, text = {"status": "not_probed", "version": None,
+                                  "reason": "Hermes --version runs an upstream update check; explain probes it"}, ""
+        else:
+            version_info, text = _probe(native, ["--version"], project, env)
+            match = _SEMVER.search(text)
+            version_info["version"] = match.group(1) if match and version_info["status"] == "reported" else None
         if version_info["status"] == "interrupted":
             # A captured signal ends discovery; do not start a second native
             # probe after the helper has cleaned the interrupted process group.
@@ -368,10 +375,15 @@ def _instruction_preview(project: Path, home: Path, claude_root: Path, codex_roo
         scope = "project" if directory == project else "ancestor"
         candidates.extend((directory / relative, scope) for relative in
                           ("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md"))
-    files = []
+    files, seen = [], set()
     for path, scope in candidates:
         status = _file_status(path)
-        if status != "absent":
+        # Under the home directory, ~/.claude/CLAUDE.md is also an ancestor
+        # candidate; that entry keeps its first, user scope. Distinct entries
+        # that are symlinks to one file (AGENTS.md -> CLAUDE.md) both remain.
+        identity = (os.path.realpath(path.parent), path.name)
+        if status != "absent" and identity not in seen:
+            seen.add(identity)
             files.append({"path": _display(path, home, project), "name": path.name, "scope": scope, "status": status})
     rules = []
     for path, scope in ((claude_root / "rules", "user"), (project / ".claude/rules", "project")):

@@ -17,8 +17,15 @@ import uuid
 RUN_ID = re.compile(r"[a-f0-9]{32}\Z")
 TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 HARNESSES = {"codex", "claude", "astra", "astra-ultra", "hermes", "hermes-astra-ultra", "command"}
+HERMES_HARNESSES = {"hermes", "hermes-astra-ultra"}
 EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra", "ultracode"}
+SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
+TASK_FIELDS = {"id", "harness", "depends_on", "prompt", "argv", "model", "effort", "timeout_seconds", "adapter",
+               "workspace", "base_ref", "sandbox", "max_turns", "skills", "run_budget_seconds"}
 MAX_DOCUMENT_BYTES = 2_000_000
+# Revisions, not arbitrary arguments: no leading option dash, whitespace or ranges.
+BASE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@^~{}+-]{0,199}\Z")
+SKILL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}\Z")
 
 
 def now() -> str:
@@ -50,7 +57,7 @@ def validate_manifest(manifest: dict) -> dict:
     result = {"version": 1, "name": name, "goal": goal, "tasks": []}
     seen = set()
     for task in tasks:
-        if not isinstance(task, dict) or set(task) - {"id", "harness", "depends_on", "prompt", "argv", "model", "effort", "timeout_seconds", "adapter", "workspace"}:
+        if not isinstance(task, dict) or set(task) - TASK_FIELDS:
             raise ValueError("Task contains unsupported fields.")
         ident = task.get("id")
         if not isinstance(ident, str) or not TASK_ID.fullmatch(ident) or ident in seen:
@@ -73,6 +80,38 @@ def validate_manifest(manifest: dict) -> dict:
             if task["workspace"] not in ("shared", "read-only", "worktree"):
                 raise ValueError("Workspace must be shared, read-only, or worktree.")
             out["workspace"] = task["workspace"]
+        if "base_ref" in task:
+            ref = task["base_ref"]
+            if out.get("workspace") != "worktree":
+                raise ValueError("base_ref applies only to worktree tasks.")
+            if not isinstance(ref, str) or not BASE_REF.fullmatch(ref) or ".." in ref:
+                raise ValueError("base_ref must name one Git revision, such as origin/main or a commit.")
+            out["base_ref"] = ref
+        if "sandbox" in task:
+            if harness != "codex":
+                raise ValueError("sandbox selects the native Codex sandbox; other harnesses keep native permissions.")
+            if task["sandbox"] not in SANDBOXES:
+                raise ValueError("Sandbox must be read-only, workspace-write, or danger-full-access.")
+            if out.get("workspace") == "read-only" and task["sandbox"] != "read-only":
+                raise ValueError("A read-only task cannot request a writable sandbox.")
+            out["sandbox"] = task["sandbox"]
+        if {"max_turns", "skills", "run_budget_seconds"} & set(task) and harness not in HERMES_HARNESSES:
+            raise ValueError("max_turns, skills and run_budget_seconds are Hermes chat options.")
+        if "max_turns" in task:
+            if type(task["max_turns"]) is not int or not 1 <= task["max_turns"] <= 10_000:
+                raise ValueError("max_turns must be an integer from 1 to 10000.")
+            out["max_turns"] = task["max_turns"]
+        if "skills" in task:
+            skills = task["skills"]
+            if (not isinstance(skills, list) or not 1 <= len(skills) <= 32 or len(set(skills)) != len(skills)
+                    or any(not isinstance(skill, str) or not SKILL.fullmatch(skill) for skill in skills)):
+                raise ValueError("skills must list 1–32 unique Hermes skill names.")
+            out["skills"] = list(skills)
+        if "run_budget_seconds" in task:
+            budget = task["run_budget_seconds"]
+            if type(budget) is not int or not 1 <= budget <= 604800:
+                raise ValueError("run_budget_seconds must be an integer from 1 to 604800.")
+            out["run_budget_seconds"] = budget
         if harness == "command":
             argv = task.get("argv")
             if "prompt" in task or "model" in task or "effort" in task:
@@ -104,6 +143,10 @@ def validate_manifest(manifest: dict) -> dict:
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 604800:
                 raise ValueError("Task timeout must be positive and at most one week.")
             out["timeout_seconds"] = timeout
+            if out.get("run_budget_seconds", 0) >= timeout:
+                # Hermes's budget is a graceful wrap-up notice; the task timeout
+                # is Workbench's hard stop and must remain the later boundary.
+                raise ValueError("run_budget_seconds must be less than timeout_seconds.")
         result["tasks"].append(out)
     graph = {t["id"]: t["depends_on"] for t in result["tasks"]}
     visited, active = set(), set()

@@ -18,6 +18,26 @@ import threading
 import time
 
 
+# Identity and messaging channel of the Claude Code host session that started
+# Workbench. A native launch is a separate session, so these are never inherited.
+HOST_SESSION_ENV = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+                    "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
+                    "CLAUDE_PID", "CLAUDE_EFFORT")
+HOST_SESSION_PREFIXES = ("CLAUDE_CODE_MESSAGING_",)
+
+
+def host_session_variables(env) -> list[str]:
+    """Names, never values, of host-session variables present in ``env``."""
+    return sorted(key for key in env if key in HOST_SESSION_ENV or key.startswith(HOST_SESSION_PREFIXES))
+
+
+def native_environment(env=None) -> dict:
+    """A copy of ``env`` (default: this process) without host-session variables."""
+    source = os.environ if env is None else env
+    removed = set(host_session_variables(source))
+    return {key: value for key, value in source.items() if key not in removed}
+
+
 @contextmanager
 def scoped_signals():
     interrupted = {"signal": None}

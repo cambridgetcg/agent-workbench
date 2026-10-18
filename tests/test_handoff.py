@@ -77,6 +77,21 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(artifact.read_bytes(), raw)
         self.assertEqual(stat.S_IMODE(artifact.stat().st_mode), 0o600)
 
+    def test_new_task_options_survive_export_import_and_plan(self):
+        from agent_workbench.cli import plan_view
+        tasks = [
+            {"id": "lane", "harness": "codex", "prompt": "Change it.", "workspace": "worktree",
+             "base_ref": "origin/main", "sandbox": "workspace-write"},
+            {"id": "astra", "harness": "hermes-astra-ultra", "prompt": "Review it.", "depends_on": ["lane"],
+             "max_turns": 150, "skills": ["zerone-development"], "run_budget_seconds": 3000, "timeout_seconds": 3300},
+        ]
+        self.state = self.store.create({"version": 1, "name": "Options", "goal": "Carry options.", "tasks": deepcopy(tasks)}, self.project)
+        self.export()
+        imported = handoff.import_handoff(self.store, self.output, self.target_project)
+        for expected, actual in zip(tasks, imported["tasks"]):
+            self.assertEqual({key: actual[key] for key in expected}, expected)
+        self.assertEqual(plan_view(imported)["manifest"]["tasks"][1]["skills"], ["zerone-development"])
+
     def test_historical_success_never_becomes_executable_success(self):
         self.populate()
         self.export()

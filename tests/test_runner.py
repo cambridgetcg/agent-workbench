@@ -27,7 +27,9 @@ if "--help" in sys.argv:
 prompt = sys.stdin.read()
 mode = prompt.splitlines()[0]
 with pathlib.Path("calls.jsonl").open("a") as f:
-    f.write(json.dumps({"kind": kind, "argv": sys.argv[1:], "prompt": prompt}) + "\n")
+    f.write(json.dumps({"kind": kind, "argv": sys.argv[1:], "prompt": prompt,
+                        "host_env": sorted(key for key in ("CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID") if key in os.environ),
+                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING")}) + "\n")
 pathlib.Path("started").write_text(str(os.getpid()))
 if mode in {"ARGUMENT_ERROR", "ARGUMENT_ERROR_ZERO", "ARGUMENT_JSON_ERROR"}:
     diagnostic = "error: option '--effort <level>' argument 'xhigh' is invalid. It must be one of: low, medium, high, max; api_key=synthetic-stderr-secret"
@@ -91,6 +93,9 @@ if mode == "INVALID_EVENT_TYPE":
 text = "observed synthetic result"
 if mode == "SECRET":
     text = "Bearer pretend-sensitive-token api_key=synthetic-key sk-secretvalue12345 " + "x" * 7000
+if mode == "MUTATION_FOOTER":
+    text = ("All edits applied.\n\n\u26a0\ufe0f File-mutation verifier: 2 file edit(s) FAILED this turn despite any wording above "
+            "that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed.\n  \u2022 `a.txt` \u2014 [patch] failed")
 if kind.startswith("hermes"):
     print(json.dumps({"type": "system", "subtype": "init", "session_id": "synthetic-hermes-initial", "model": "private-model"}))
     print(json.dumps({"type": "text", "text": "PRIVATE_DELTA_SENTINEL"}))
@@ -270,6 +275,75 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual(self.calls()[0]["argv"], ["chat", "--query-file", "-", "--format", "stream-json", "--model", "custom/provider-model", "--reasoning", "max"])
         self.assertEqual(self.calls()[1]["argv"], ["chat", "--query-file", "-", "--format", "stream-json", "--model", "gpt-6-astra", "--reasoning", "ultra"])
+
+    def test_hermes_forwards_turn_skill_and_budget_options(self):
+        run_id = self.create([self.agent("native", "hermes-astra-ultra", max_turns=150, skills=["zerone-development", "ops:review"],
+                                         run_budget_seconds=3000, timeout_seconds=3300)])
+        state = run_workflow(self.store, run_id)
+        self.assertEqual(state["status"], "succeeded")
+        self.assertEqual(self.calls()[0]["argv"], ["chat", "--query-file", "-", "--format", "stream-json", "--max-turns", "150",
+                                                   "--skills", "zerone-development,ops:review", "--run-budget", "3000"])
+
+    def test_codex_sandbox_follows_read_only_declaration_and_explicit_choice(self):
+        run_id = self.create([
+            self.agent("declared", "codex", workspace="read-only"),
+            self.agent("chosen", "codex", sandbox="workspace-write", depends_on=["declared"]),
+            self.agent("native", "codex", depends_on=["chosen"]),
+        ])
+        state = run_workflow(self.store, run_id)
+        self.assertEqual(state["status"], "succeeded")
+        argv = [call["argv"] for call in self.calls()]
+        self.assertEqual(argv[0][:5], ["--no-daemon", "exec", "--json", "--sandbox", "read-only"])
+        self.assertEqual(argv[1][:5], ["--no-daemon", "exec", "--json", "--sandbox", "workspace-write"])
+        self.assertNotIn("--sandbox", argv[2])
+        self.assertEqual([task["attempts"][0]["launch"]["native_sandbox"] for task in state["tasks"]],
+                         ["read-only", "workspace-write", None])
+
+    def test_goal_equal_to_single_prompt_is_sent_once(self):
+        state = self.store.create({"version": 1, "name": "One task", "goal": "SUCCESS inspect once",
+                                   "tasks": [self.agent("only", "codex", prompt="SUCCESS inspect once")]}, self.project)
+        self.run_ids.append(state["id"])
+        self.assertEqual(run_workflow(self.store, state["id"])["status"], "succeeded")
+        prompt = self.calls()[0]["prompt"]
+        self.assertEqual(prompt.count("SUCCESS inspect once"), 1)
+        self.assertNotIn("Workflow goal:", prompt)
+
+    def test_host_session_identity_is_not_inherited_by_native_tasks(self):
+        host = {"CLAUDECODE": "1", "CLAUDE_CODE_MESSAGING_TOKEN": "synthetic-host-channel-token",
+                "CLAUDE_CODE_SESSION_ID": "host-session", "CLAUDE_PID": "1", "WORKBENCH_KEPT_SETTING": "kept"}
+        with patch.dict(os.environ, host):
+            run_id = self.create([self.agent("codex", "codex"), self.agent("hermes", "hermes", depends_on=["codex"])])
+            state = run_workflow(self.store, run_id)
+        self.assertEqual(state["status"], "succeeded")
+        for call in self.calls():
+            self.assertEqual(call["host_env"], [])
+            self.assertEqual(call["kept_env"], "kept")
+        launch = state["tasks"][0]["attempts"][0]["launch"]
+        self.assertIn("CLAUDE_CODE_MESSAGING_TOKEN", launch["host_session_environment_removed"])
+        self.assertNotIn("synthetic-host-channel-token", json.dumps(state))
+
+    def test_hermes_file_mutation_footer_is_a_warning_not_clean_success(self):
+        state = run_workflow(self.store, self.create([self.agent("edit", "hermes", prompt="MUTATION_FOOTER")]))
+        result = state["tasks"][0]["result"]
+        self.assertEqual(state["status"], "succeeded")
+        self.assertEqual(result["warning_count"], 1)
+        self.assertIn("2 failed file edit(s)", result["warnings"][0])
+
+    def test_launch_profile_skips_hermes_update_checking_version_probe(self):
+        state = run_workflow(self.store, self.create([self.agent("hermes", "hermes"), self.agent("codex", "codex", depends_on=["hermes"])]))
+        versions = [task["attempts"][0]["launch"]["version"] for task in state["tasks"]]
+        self.assertEqual(versions[0]["status"], "not_probed")
+        self.assertEqual(versions[1]["status"], "reported")
+
+    def test_claim_loss_after_attempt_creation_finishes_that_attempt(self):
+        from agent_workbench.workspaces import CheckoutLease, WorkspaceBusy
+        with patch.object(CheckoutLease, "attach_attempt", side_effect=WorkspaceBusy("fixture claim removed")):
+            state = run_workflow(self.store, self.create([self.agent()]))
+        task = state["tasks"][0]
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(task["status"], "failed")
+        self.assertEqual(task["attempts"][0]["failure_kind"], "workspace_busy_after_attempt")
+        self.assertEqual(self.calls(), [])
 
     def test_hermes_requires_one_valid_terminal_and_process_success(self):
         for mode in ("ZERO_ERROR", "ERROR_ZERO", "NO_TERMINAL", "INVALID_SHAPE", "BOOL_EXIT", "MISSING_EXIT",

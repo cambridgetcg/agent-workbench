@@ -72,6 +72,42 @@ class StoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "gpt-6-astra only"):
             validate_manifest({**self.manifest, "tasks": [{"id": "native", "harness": "hermes-astra-ultra", "prompt": "Inspect", "model": "other"}]})
 
+    def test_worktree_base_codex_sandbox_and_hermes_options_are_bounded(self):
+        def task(**fields):
+            return {"version": 1, "name": "Test", "goal": "Verify state", "tasks": [{"id": "t", "prompt": "Work.", **fields}]}
+        accepted = validate_manifest(task(harness="codex", workspace="worktree", base_ref="origin/main", sandbox="workspace-write"))
+        self.assertEqual(accepted["tasks"][0]["base_ref"], "origin/main")
+        self.assertEqual(accepted["tasks"][0]["sandbox"], "workspace-write")
+        hermes = validate_manifest(task(harness="hermes-astra-ultra", max_turns=150, skills=["zerone-development", "ops:review"],
+                                        run_budget_seconds=3000, timeout_seconds=3300))
+        self.assertEqual(hermes["tasks"][0]["skills"], ["zerone-development", "ops:review"])
+        validate_manifest(task(harness="codex", workspace="read-only", sandbox="read-only"))
+        for fields in (
+            {"harness": "codex", "base_ref": "origin/main"},
+            {"harness": "codex", "workspace": "shared", "base_ref": "origin/main"},
+            {"harness": "codex", "workspace": "worktree", "base_ref": "--upload-pack=touch"},
+            {"harness": "codex", "workspace": "worktree", "base_ref": "main..feature"},
+            {"harness": "codex", "workspace": "worktree", "base_ref": "with space"},
+            {"harness": "codex", "workspace": "worktree", "base_ref": ""},
+            {"harness": "claude", "sandbox": "read-only"},
+            {"harness": "codex", "sandbox": "bypass"},
+            {"harness": "codex", "workspace": "read-only", "sandbox": "workspace-write"},
+            {"harness": "codex", "max_turns": 10},
+            {"harness": "hermes", "max_turns": 0},
+            {"harness": "hermes", "max_turns": True},
+            {"harness": "hermes", "skills": []},
+            {"harness": "hermes", "skills": ["a,b"]},
+            {"harness": "hermes", "skills": ["dup", "dup"]},
+            {"harness": "hermes", "skills": ["-flag"]},
+            {"harness": "hermes", "run_budget_seconds": 1.5},
+            {"harness": "hermes", "run_budget_seconds": 900, "timeout_seconds": 900},
+        ):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                validate_manifest(task(**fields))
+        command = {"version": 1, "name": "Test", "goal": "Verify state",
+                   "tasks": [{"id": "t", "harness": "command", "argv": ["true"], "workspace": "worktree", "base_ref": "HEAD~1"}]}
+        self.assertEqual(validate_manifest(command)["tasks"][0]["base_ref"], "HEAD~1")
+
     def test_update_failure_does_not_save(self):
         state = self.store.create(self.manifest, self.root)
         def fail(s):

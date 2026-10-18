@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from . import __version__
-from .store import Store, add_event, now, MAX_DOCUMENT_BYTES, HARNESSES, EFFORTS
+from .store import Store, add_event, now, MAX_DOCUMENT_BYTES, HARNESSES, EFFORTS, SANDBOXES
 
 
 def read_input(path: Path, *, limit: int = MAX_DOCUMENT_BYTES) -> str:
@@ -35,7 +35,9 @@ def load_manifest(path: Path) -> dict:
 
 
 def creation_manifest(args) -> dict:
-    simple_options = (args.harness, args.prompt, args.prompt_file, args.name, args.goal, args.model, args.effort, args.adapter, args.workspace)
+    simple_options = (args.harness, args.prompt, args.prompt_file, args.name, args.goal, args.model, args.effort, args.adapter,
+                      args.workspace, args.base_ref, args.sandbox, args.max_turns, args.skill, args.run_budget,
+                      args.timeout_seconds)
     if args.manifest is not None:
         if any(value is not None for value in simple_options):
             raise ValueError("Use a manifest or prompt options, not both.")
@@ -44,9 +46,12 @@ def creation_manifest(args) -> dict:
         raise ValueError("Provide a manifest (or - for stdin), or --harness with --prompt/--prompt-file.")
     prompt = args.prompt if args.prompt is not None else read_input(args.prompt_file, limit=400_000)
     task = {"id": "work", "harness": args.harness, "prompt": prompt}
-    for field in ("model", "effort", "adapter", "workspace"):
-        if getattr(args, field) is not None:
-            task[field] = getattr(args, field)
+    for field, option in (("model", "model"), ("effort", "effort"), ("adapter", "adapter"), ("workspace", "workspace"),
+                          ("base_ref", "base_ref"), ("sandbox", "sandbox"), ("max_turns", "max_turns"),
+                          ("skills", "skill"), ("run_budget_seconds", "run_budget"),
+                          ("timeout_seconds", "timeout_seconds")):
+        if getattr(args, option) is not None:
+            task[field] = getattr(args, option)
     name = args.name if args.name is not None else prompt.strip().split("\n")[0][:160]
     goal = args.goal if args.goal is not None else (prompt if len(prompt) <= 20_000 else name)
     return {"version": 1, "name": name, "goal": goal, "tasks": [task]}
@@ -162,7 +167,13 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--model", help="Explicit native model override")
     c.add_argument("--effort", choices=sorted(EFFORTS), help="Explicit native effort override")
     c.add_argument("--adapter", choices=["process", "duplex"], help="Use explicit native duplex controls where supported")
-    c.add_argument("--workspace", choices=["shared", "read-only", "worktree"], help="Checkout ownership (read-only is a task declaration, not a sandbox)")
+    c.add_argument("--workspace", choices=["shared", "read-only", "worktree"], help="Checkout ownership (read-only also selects Codex's read-only sandbox)")
+    c.add_argument("--base-ref", help="Worktree base revision, such as origin/main (default: the project's HEAD)")
+    c.add_argument("--sandbox", choices=sorted(SANDBOXES), help="Codex sandbox for this task (default: native configuration)")
+    c.add_argument("--max-turns", type=int, help="Hermes tool-calling iterations per turn")
+    c.add_argument("--skill", action="append", help="Hermes skill to preload; repeat for several")
+    c.add_argument("--run-budget", type=int, help="Hermes graceful wall-clock budget in seconds (below --timeout-seconds)")
+    c.add_argument("--timeout-seconds", type=float, help="Hard time limit for this task in seconds")
     ls = sub.add_parser("list", help="List saved local runs")
     ls.add_argument("--json", action="store_true")
     ls.add_argument("--project", type=Path, help="Only show runs for this project")

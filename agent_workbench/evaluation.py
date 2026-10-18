@@ -19,7 +19,7 @@ import time
 import uuid
 
 from .handoff import contains_credential_text
-from .processes import run_owned
+from .processes import native_environment, run_owned
 from .store import now, write_private_json
 
 
@@ -180,7 +180,7 @@ def evaluation_capabilities(executable="claude"):
     if selected is None:
         raise ValueError("Claude evaluation executable was not found.")
     selected = str(Path(selected).resolve(strict=True))
-    environment = {**os.environ, "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1"}
+    environment = {**native_environment(), "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1"}
     grace = 12 if Path(selected).name in {"claude-astra", "claude-astra-ultra", "hermes", "hermes-astra-ultra"} else 1
     version_result = run_owned([selected, "--version"], env=environment, timeout=5,
                                output_limit=100_000, termination_grace=grace)
@@ -370,7 +370,7 @@ def run_evaluation(plan, *, state_root=None):
         argv += ["--allow-tools", *options["allow_tools"]]
     write_private_json(directory / "plan.json", checked)
     started, elapsed_start = now(), time.monotonic()
-    environment = {**os.environ, "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1"}
+    environment = {**native_environment(), "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1"}
     log_path = directory / "native-output.log"
     observed = run_owned(argv, cwd=checked["plugin"], env=environment, timeout=options["timeout_seconds"],
                          output_limit=MAX_REPORT_BYTES, stdout_path=log_path,

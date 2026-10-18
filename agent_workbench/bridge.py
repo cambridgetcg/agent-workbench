@@ -10,6 +10,8 @@ from .store import add_event, now
 
 
 MAX_NATIVE_EVENTS = 2000
+FLUSH_EVENTS = 100
+FLUSH_SECONDS = 0.25
 _FIELDS = {"kind", "status", "action", "request_id", "wire_request_id", "session_id",
            "task_id", "tool_use_id", "parent_tool_use_id", "item_id", "agent_id", "tool_name",
            "code", "decision_type", "subtype", "tool", "role", "terminal_reason", "input_tokens", "output_tokens",
@@ -31,11 +33,17 @@ class PublicJournal:
             selected["native_task_id"] = selected.pop("task_id")
         selected.update(at=now(), task_id=self.task_id, attempt_id=self.attempt_id)
         self.pending.append(selected)
-        if len(self.pending) >= 100 or time.monotonic() - self.last_flush >= 0.25:
-            self.flush()
+        self.flush(force=False)
 
-    def flush(self):
+    def flush(self, force=True):
+        """Persist pending events; unforced calls batch rewrites of the run state.
+
+        Pollers call ``flush(force=False)`` every cycle. Lifecycle boundaries
+        force a flush so receipts are durable before outcomes are recorded.
+        """
         if not self.pending:
+            return
+        if not force and len(self.pending) < FLUSH_EVENTS and time.monotonic() - self.last_flush < FLUSH_SECONDS:
             return
         batch, self.pending = self.pending, []
         def record(state):
@@ -72,6 +80,7 @@ class EventTail:
     def __init__(self, path, harness, emit, limit=2_097_152):
         self.path, self.harness, self.emit, self.limit = path, harness, emit, limit
         self.offset, self.buffer, self.dropping = 0, b"", False
+        self.last_kind = None
 
     def poll(self, final=False):
         from .native import normalize_event
@@ -102,6 +111,12 @@ class EventTail:
         except (ValueError, UnicodeError):
             return
         for event in normalize_event(frame, harness=self.harness):
+            # Hermes streams each text delta as a frame. One public message
+            # event per contiguous run keeps tool events within the journal cap.
+            if (self.harness in {"hermes", "hermes-astra-ultra"} and event.get("kind") == "native_message"
+                    and self.last_kind == "native_message"):
+                continue
+            self.last_kind = event.get("kind")
             self.emit(event)
 
 
