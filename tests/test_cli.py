@@ -40,6 +40,39 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(state["tasks"][0]["effort"], "high")
                 self.assertEqual(state["tasks"][0]["attempts"], [])
 
+    def test_single_task_flags_map_to_new_task_fields(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prefix = ["--state-dir", str(root / "state"), "create", "--project", temp]
+            for flags, expected in (
+                (["--harness", "codex", "--workspace", "worktree", "--base-ref", "origin/main", "--sandbox", "workspace-write"],
+                 {"workspace": "worktree", "base_ref": "origin/main", "sandbox": "workspace-write"}),
+                (["--harness", "hermes-astra-ultra", "--max-turns", "150", "--skill", "zerone-development",
+                  "--skill", "coordinate-agent-work-hermes", "--run-budget", "3000"],
+                 {"max_turns": 150, "skills": ["zerone-development", "coordinate-agent-work-hermes"], "run_budget_seconds": 3000}),
+            ):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(main(prefix + flags + ["--prompt", "Work."]), 0)
+                task = Store(root / "state").read(output.getvalue().strip())["tasks"][0]
+                self.assertEqual({key: task[key] for key in expected}, expected)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(prefix + ["--harness", "claude", "--sandbox", "read-only", "--prompt", "Work."]), 1)
+                self.assertEqual(main(prefix + ["--harness", "codex", "--base-ref", "origin/main", "--prompt", "Work."]), 1)
+
+    def test_single_task_budget_needs_a_longer_task_timeout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prefix = ["--state-dir", str(root / "state"), "create", "--project", temp, "--harness", "hermes", "--prompt", "Work."]
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(prefix + ["--run-budget", "3000", "--timeout-seconds", "3300"]), 0)
+            task = Store(root / "state").read(output.getvalue().strip())["tasks"][0]
+            self.assertEqual((task["run_budget_seconds"], task["timeout_seconds"]), (3000, 3300))
+            with contextlib.redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(main(prefix + ["--run-budget", "3300", "--timeout-seconds", "3300"]), 1)
+            self.assertIn("run_budget_seconds must be less than timeout_seconds", error.getvalue())
+
     def test_invalid_creation_never_saves_a_run(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

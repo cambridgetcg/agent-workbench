@@ -203,6 +203,29 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(report["versions"]["codex"]["status"], "timed_out")
             self.assertEqual(report["astra"]["sessions"][0]["observed"]["listener"]["status"], "unknown")
 
+    def test_version_from_failed_command_is_unverified_and_codex_keys_are_presence_only(self):
+        def failing(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 2, "cliproxyapi 7.2.145", "unknown flag")
+        with patch.object(doctor.subprocess, "run", side_effect=failing):
+            report = doctor.diagnose(home=self.home, project=self.project,
+                                     env={**self.env, "OPENAI_API_KEY": "sk-private-openai-key", "CODEX_API_KEY": ""})
+        self.assertEqual(report["versions"]["cliproxyapi"]["status"], "unverified")
+        self.assertEqual(report["versions"]["cliproxyapi"]["exit_code"], 2)
+        self.assertEqual(report["codex"]["authentication"]["process_environment"],
+                         {"OPENAI_API_KEY": "present (redacted)", "CODEX_API_KEY": "empty"})
+        self.assertNotIn("sk-private-openai-key", json.dumps(report))
+        self.assertNotIn("sk-private-openai-key", doctor.format_report(report))
+
+    def test_text_report_shows_unverified_versions_and_codex_key_presence(self):
+        def failing(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 2, "cliproxyapi 7.2.145", "unknown flag")
+        with patch.object(doctor.subprocess, "run", side_effect=failing):
+            text = doctor.format_report(doctor.diagnose(home=self.home, project=self.project,
+                                                        env={**self.env, "OPENAI_API_KEY": "sk-private-openai-key"}))
+        self.assertIn("Observed cliproxyapi: 7.2.145 (unverified, exit 2)", text)
+        self.assertIn("Codex auth environment: OPENAI_API_KEY present (redacted)", text)
+        self.assertNotIn("sk-private-openai-key", text)
+
     def test_version_provenance_identifies_selected_binary_without_home_path(self):
         with patch.object(doctor.shutil, "which", side_effect=lambda name, **_kw: str(self.home / ".local/bin" / name)):
             report = self.diagnose()

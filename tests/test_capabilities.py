@@ -138,6 +138,18 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(profile["configuration"]["hermes"]["status"], "not_inspected")
         self.assertNotIn("PRIVATE_VERSION", json.dumps(profile))
 
+    def test_launch_inspection_can_skip_hermes_update_checking_version(self):
+        self.executable(name="hermes")
+        self.executable(name="codex")
+        self.help = "--query-file --format stream-json --reasoning --max-turns --skills --run-budget"
+        profile = capabilities.inspect_launch({"harness": "hermes"}, self.project, env=self.env, home=self.home, update_check=False)
+        self.assertEqual([call[0][1:] for call in self.calls], [["--help"], ["chat", "--help"]])
+        self.assertEqual(profile["version"]["status"], "not_probed")
+        self.assertIn("--max-turns", profile["help"]["flags"])
+        self.calls.clear()
+        capabilities.inspect_launch({"harness": "codex"}, self.project, env=self.env, home=self.home, update_check=False)
+        self.assertEqual(self.calls[0][0][1:], ["--version"])
+
     def test_hermes_astra_inspects_native_child_without_executing_wrapper(self):
         wrapper = self.executable(name="hermes-astra-ultra")
         native = self.executable(name="hermes")
@@ -220,6 +232,21 @@ class CapabilityTests(unittest.TestCase):
                        "sk-private-secret-token", "private-environment-value", "private-api-key", "private-process-env"):
             self.assertNotIn(secret, rendered)
         self.assertEqual(report["scope"], "partial")
+
+    def test_user_instruction_file_is_listed_once_for_projects_under_home(self):
+        self.write(".claude/CLAUDE.md", "PRIVATE user instructions")
+        files = [row for row in self.explain()["instructions"]["files"] if row["path"] == "~/.claude/CLAUDE.md"]
+        self.assertEqual([row["scope"] for row in files], ["user"])
+
+    def test_symlinked_agents_files_remain_distinct_instruction_entries(self):
+        self.write(".claude/CLAUDE.md", "PRIVATE user instructions")
+        (self.home / ".codex").mkdir()
+        (self.home / ".codex/AGENTS.md").symlink_to(self.home / ".claude/CLAUDE.md")
+        self.write("project/CLAUDE.md", "PRIVATE project instructions")
+        (self.project / "AGENTS.md").symlink_to("CLAUDE.md")
+        rows = {(row["path"], row["scope"]) for row in self.explain()["instructions"]["files"]}
+        self.assertTrue({("~/.claude/CLAUDE.md", "user"), ("~/.codex/AGENTS.md", "codex_user"),
+                         ("$PROJECT/CLAUDE.md", "project"), ("$PROJECT/AGENTS.md", "project")} <= rows)
 
     def test_authentication_and_instruction_bodies_are_never_opened(self):
         self.write(".claude/CLAUDE.md", "private-instruction-body")

@@ -12,14 +12,13 @@ from pathlib import Path
 import re
 import stat
 
-from .store import add_event, now, validate_manifest
+from .store import TASK_FIELDS, add_event, now, validate_manifest
 
 
 FORMAT = "agent-workbench-handoff"
 MAX_BYTES = 2_000_000
 MAX_TASKS = 200
 MAX_NOTES = 500
-TASK_FIELDS = {"id", "harness", "depends_on", "prompt", "argv", "model", "effort", "timeout_seconds", "adapter", "workspace"}
 TASK_STATUSES = {"pending", "running", "succeeded", "failed", "cancelled", "interrupted"}
 RUN_STATUSES = {"ready", "running", "paused", "stopped", "succeeded", "failed", "interrupted"}
 NOTE_KINDS = {"decision", "question", "evidence", "next"}

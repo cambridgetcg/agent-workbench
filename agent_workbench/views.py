@@ -66,9 +66,12 @@ def status_details(state: dict) -> dict:
         if latest is not None:
             attempt = attempts[-1]
             launch = attempt.get("launch", {})
-            latest["launch"] = {**_selected(launch, ("harness", "display_executable", "status")),
+            latest["launch"] = {**_selected(launch, ("harness", "display_executable", "status", "native_sandbox")),
                                 "version": _selected(launch.get("version", {}), ("status", "version", "subject"))}
-            latest["workspace"] = _selected(attempt.get("workspace", {}), ("mode", "path", "base_commit", "retained", "sandboxed", "source_dirty"))
+            latest["workspace"] = _selected(attempt.get("workspace", {}), (
+                "mode", "path", "base_ref", "base_commit", "retained", "sandboxed", "source_dirty",
+                "evidence_status", "final_head", "branch", "commits_ahead", "commits_behind", "dirty",
+                "uncommitted_entries", "untracked_entries", "files_changed", "insertions", "deletions"))
             latest["control_receipts"] = [_selected(r, ("at", "request_id", "action", "status")) for r in attempt.get("control_receipts", [])[-64:]]
         result = task.get("result") or {}
         if latest is not None and result.get("attempt_id") == latest.get("id"):

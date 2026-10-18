@@ -27,6 +27,9 @@ _CLAIM_LIMIT = 256
 _CLAIM_BYTES = 1_048_576
 _KEY = re.compile(r"[a-f0-9]{64}\Z")
 _TOKEN = re.compile(r"[a-f0-9]{32}\Z")
+_COMMIT = re.compile(r"[a-f0-9]{40}(?:[a-f0-9]{24})?\Z")
+_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
+_SHORTSTAT = re.compile(r"(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?")
 _CURRENT_LEASE = threading.local()
 _SPAWN_GATE = """import os,sys
 fd=int(sys.argv[1])
@@ -226,7 +229,13 @@ class CheckoutLease:
         except BaseException:
             if process is not None:
                 _terminate_group(process.pid, process, grace_seconds=0.2)
-                self.release_process(process.pid)
+                try:
+                    self.release_process(process.pid)
+                finally:
+                    # The caller never receives this process, so close its pipes here.
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
             raise
         finally:
             if read_gate is not None:
@@ -373,6 +382,8 @@ def _git(project, *args):
     together; stderr is counted but never retained or included in exceptions.
     A helper that deliberately creates a new session is outside this process
     group, just as for native task process groups; this is not an OS sandbox.
+    GIT_OPTIONAL_LOCKS=0 keeps status from taking a source checkout's index
+    lock that a concurrent writer may need.
     """
     from .runner import _terminate_group
     process = None
@@ -385,6 +396,7 @@ def _git(project, *args):
         spawn = owner.spawn if owner is not None else subprocess.Popen
         process = spawn(["git", "-C", str(project), *args], stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
                         start_new_session=True, close_fds=True)
         for stream in (process.stdout, process.stderr):
             os.set_blocking(stream.fileno(), False)
@@ -457,8 +469,15 @@ def prepare(store, run_id, task, attempt_id, project, *, lease_stack=None):
                 "sandboxed": False}
     source_root = Path(_git(project, "rev-parse", "--show-toplevel")).resolve()
     relative = project.relative_to(source_root)
-    base = _git(project, "rev-parse", "HEAD")
-    dirty = bool(_git(source_root, "status", "--porcelain"))
+    base_ref = task.get("base_ref")
+    if base_ref:
+        try:
+            base = _git(project, "rev-parse", "--verify", "--end-of-options", base_ref + "^{commit}")
+        except GitWorkspaceError as exc:
+            raise ValueError("base_ref does not name a commit in this repository; fetch it first") from exc
+    else:
+        base = _git(project, "rev-parse", "HEAD")
+    dirty = bool(_git(source_root, "status", "--porcelain", "--untracked-files=normal"))
     parent = store.directory(run_id) / "worktrees"
     parent.mkdir(mode=0o700, exist_ok=True)
     if parent.is_symlink():
@@ -468,10 +487,11 @@ def prepare(store, run_id, task, attempt_id, project, *, lease_stack=None):
         raise ValueError("Attempt worktree already exists; it will not be reused")
     cwd = root / relative
     workspace = {"mode": mode, "path": str(cwd), "root": str(root), "source_root": str(source_root),
-                 "base_commit": base, "source_dirty": dirty, "owned": True, "retained": False,
+                 "base_ref": base_ref or "HEAD", "base_commit": base, "source_dirty": dirty, "owned": True, "retained": False,
                  "preparation_status": "preparing", "path_exists": False,
                  "isolation": "git_worktree", "sandboxed": False,
-                 "snapshot": "committed_HEAD_only; uncommitted source changes are not copied"}
+                 "snapshot": ("committed_base_ref_only" if base_ref else "committed_HEAD_only")
+                             + "; uncommitted source changes are not copied"}
     # Git can create the checkout before a post-checkout hook fails or times
     # out. Persist its owned location before the first effect so recovery can
     # discover and retain it even when prepare never returns to the runner.
@@ -497,6 +517,58 @@ def prepare(store, run_id, task, attempt_id, project, *, lease_stack=None):
     finally:
         if lease_stack is None:
             ownership_stack.close()
+
+
+def record_worktree_evidence(store, run_id, task_id, attempt_id, workspace, *, settled=True):
+    """Record what an attempt left in its owned worktree, after its processes end.
+
+    Commit identifiers, an optional branch name and counts only: no file names,
+    diffs or contents enter run state. Diff counts compare the base commit with
+    the final working tree, so they include both commits and uncommitted edits.
+    Evidence is observation, not review. This never raises for a Git, ownership
+    or helper failure: evidence becomes unavailable and the outcome stands.
+    ``settled=False`` (the attempt's group may still run) skips Git entirely.
+    """
+    root, base = workspace["root"], workspace["base_commit"]
+    evidence = {"evidence_status": "unavailable"}
+    if not settled:
+        evidence["evidence_failure"] = "processes_still_running"
+        workspace = {**workspace, **evidence}
+        _record_workspace(store, run_id, task_id, attempt_id, workspace)
+        return workspace
+    try:
+        head = _git(root, "rev-parse", "HEAD")
+        try:
+            branch = _git(root, "symbolic-ref", "--short", "-q", "HEAD") or None
+        except GitWorkspaceError as exc:
+            if exc.reason != "exit":
+                raise
+            branch = None  # Detached HEAD.
+        behind, ahead = (int(value) for value in _git(root, "rev-list", "--left-right", "--count", base + "...HEAD").split())
+        entries = _git(root, "status", "--porcelain", "--untracked-files=normal").splitlines()
+        shortstat = _SHORTSTAT.search(_git(root, "diff", "--no-ext-diff", "--shortstat", base))
+        if not _COMMIT.fullmatch(head):
+            raise GitWorkspaceError("unexpected_output")
+        evidence = {"evidence_status": "recorded", "final_head": head,
+                    "branch": branch if branch is None or _BRANCH.fullmatch(branch) else "[unusual branch name withheld]",
+                    "commits_ahead": ahead, "commits_behind": behind, "dirty": bool(entries),
+                    "uncommitted_entries": sum(not line.startswith("??") for line in entries),
+                    "untracked_entries": sum(line.startswith("??") for line in entries),
+                    "files_changed": int(shortstat.group(1)) if shortstat else 0,
+                    "insertions": int(shortstat.group(2) or 0) if shortstat else 0,
+                    "deletions": int(shortstat.group(3) or 0) if shortstat else 0,
+                    "evidence_scope": "base commit to final working tree; counts only, untracked files not diffed"}
+    except GitWorkspaceError as exc:
+        evidence["evidence_failure"] = "git_helper_" + exc.reason
+    except WorkspaceBusy:
+        # Helpers launch through the worktree claim; a vanished or unverifiable
+        # claim must not turn a finished attempt back into contention.
+        evidence["evidence_failure"] = "ownership_unavailable"
+    except (ValueError, OSError):
+        evidence["evidence_failure"] = "unexpected_output"
+    workspace = {**workspace, **evidence}
+    _record_workspace(store, run_id, task_id, attempt_id, workspace)
+    return workspace
 
 
 def workspace_view(state):
@@ -549,8 +621,16 @@ def remove_clean(store, run_id, task_id, attempt_id):
             if common.resolve() != source_common.resolve():
                 raise ValueError("Workspace Git ownership does not match its source repository")
             # Detached commits could become unreachable after removal.
-            if _git(root, "status", "--porcelain") or _git(root, "rev-parse", "HEAD") != workspace["base_commit"]:
+            # Explicit modes: status.showUntrackedFiles=no must not hide files.
+            if (_git(root, "status", "--porcelain", "--untracked-files=normal")
+                    or _git(root, "rev-parse", "HEAD") != workspace["base_commit"]):
                 raise ValueError("Workspace has changes or new commits; preserve or integrate them first")
+            # Git removes ignored files with the tree without asking. Build
+            # outputs, generated keys or local artifacts could live there.
+            ignored = sum(line.startswith("!!") for line in
+                          _git(root, "status", "--porcelain", "--ignored", "--untracked-files=normal").splitlines())
+            if ignored:
+                raise ValueError(f"Workspace contains {ignored} ignored path(s) that removal would delete; inspect or remove them first")
             _git(workspace["source_root"], "worktree", "remove", str(root))
             def removed(current):
                 from .store import add_event, now

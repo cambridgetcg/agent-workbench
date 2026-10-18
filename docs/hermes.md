@@ -61,7 +61,9 @@ stays outside this repository. Do not print or commit it.
 The installed profile uses native local tools and normal approvals, disables
 external-login adoption and shared telemetry, and explicitly routes title
 generation through the same named custom provider. No API-key fallback is
-configured by Workbench. Subscription availability and quotas still apply.
+configured by Workbench. A profile's own `fallback_providers` stay in force, and
+Workbench evidence records only the configured model label, not which model or
+provider answered a turn. Subscription availability and quotas still apply.
 
 ## Workbench workflows
 
@@ -75,6 +77,22 @@ agent-workbench timeline RUN_ID
 agent-workbench explain --harness hermes-astra-ultra --json
 ```
 
+Long tasks can raise the profile's turn limit, preload skills and leave Hermes
+time to wrap up before Workbench's hard task timeout:
+
+```json
+{"id": "lane", "harness": "hermes-astra-ultra", "prompt": "...",
+ "max_turns": 150, "skills": ["zerone-development"],
+ "run_budget_seconds": 3000, "timeout_seconds": 3300}
+```
+
+These become `chat --max-turns`, `--skills` (comma-joined) and `--run-budget`.
+`create` offers `--max-turns`, repeatable `--skill`, `--run-budget` and
+`--timeout-seconds`. The invocation's `run --timeout` is also a hard stop, so run
+this example with `run RUN_ID --timeout 3600`. A profile's `agent.max_turns`
+otherwise applies; when it runs out, Hermes reports an incomplete turn and the
+task fails.
+
 Use `hermes` to retain a normal Hermes installation's configured profile/model;
 use `hermes-astra-ultra` for the explicit subscription launcher. Both use the
 native `chat --query-file - --format stream-json` process protocol. Prompts travel
@@ -85,7 +103,10 @@ Hermes's additional `none` and `minimal` settings remain available in Hermes.
 
 Success requires process exit zero and exactly one valid native terminal result
 with exit code zero, text and a session identifier. Recoverable individual tool
-errors do not prematurely end a task. Session IDs, selected usage metadata and
+errors do not prematurely end a task. When Hermes appends its file-mutation
+verifier footer (failed `write_file`/`patch` calls), the result carries a warning;
+add a command verifier task when file effects matter. Streamed text deltas
+appear in the timeline as one message event per contiguous run. Session IDs, selected usage metadata and
 tool names can appear in public workflow events; prompts, tool arguments,
 tool outputs and reasoning remain in private native logs. Stop, deadlines and
 recovery preserve Workbench's existing explicit-retry rules.
@@ -94,7 +115,8 @@ Hermes currently supports the process adapter. Workbench's live `send` and
 acknowledged turn interrupt remain Claude-compatible features. Process-group
 stop is available for Hermes. Hermes plugin evaluation is not implemented.
 `explain` can run native version/help checks; unlike the default doctor, that
-may cause Hermes's upstream update check.
+may cause Hermes's upstream update check. Run launches inspect `--help` and
+`chat --help` only and record the version as `not_probed`.
 
 ## Install the skill in Hermes
 

@@ -30,10 +30,13 @@ succeeds. Ready tasks must also fit their declared checkout ownership:
 
 - `shared` is the default project checkout and serializes with its shared readers
   and writers, regardless of graph independence.
-- `read-only` tasks may overlap other readers. This declaration is not a sandbox.
+- `read-only` tasks may overlap other readers. This declaration is not a sandbox,
+  except that Codex tasks receive Codex's native read-only sandbox.
 - `worktree` tasks get independent detached Git worktrees per attempt and may
-  overlap either mode. Their source is committed HEAD; uncommitted/untracked
-  files are not copied. The project's repository-relative path is preserved.
+  overlap either mode. Their source is committed HEAD or the task's `base_ref`;
+  uncommitted/untracked files are not copied. The project's repository-relative
+  path is preserved. After each attempt Workbench records final HEAD, branch and
+  change counts, and dependent prompts receive that record.
 
 Checkout leases coordinate controllers sharing a Workbench state root. They do
 not exclude editors or processes outside Workbench. A busy lease creates no
@@ -48,8 +51,9 @@ an explicit task with its own verification.
 
 `workspaces RUN` lists retained ownership and checkout metadata.
 `workspace-remove RUN TASK ATTEMPT` removes only a recorded owned tree after
-execution, while clean and still at its recorded base commit. Dirty work or new
-commits are preserved; there is no automatic cleanup or force removal.
+execution, while clean, free of ignored files and still at its recorded base
+commit. Dirty work, ignored files or new commits are preserved; there is no
+automatic cleanup or force removal.
 
 Acceptance evidence: real synthetic commands and temporary Git repositories
 verify overlap and worker bounds, serial shared writers, dependency joins,
@@ -61,6 +65,8 @@ controller-error cleanup. Crash recovery never infers permission to repeat work.
 
 Add inspectable artifact-transfer/integration steps that state which checkout and
 commit they consume, rather than treating dependency completion as a merge.
+Recorded worktree evidence (0.5.0) supplies the commit; consuming it remains a
+task-authored effect.
 Named manifest templates can package repeatable review/verification work while
 preserving an ordinary expanded graph, user model choices and execution bounds.
 

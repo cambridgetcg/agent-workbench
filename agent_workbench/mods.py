@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import re
 import shutil
 import tempfile
 
 from .handoff import contains_credential_text
-from .processes import run_owned
+from .processes import native_environment, run_owned
 
 
 OUTPUT_LIMIT = 1_048_576
@@ -87,7 +86,7 @@ def check_mod(plugin, *, executable="claude", enable_function_hooks=False, run_t
     with tempfile.TemporaryDirectory(prefix="agent-workbench-mod-check-") as temporary:
         config = Path(temporary) / "claude-config"
         config.mkdir(mode=0o700)
-        environment = {**os.environ, "CLAUDE_CONFIG_DIR": str(config), "DISABLE_AUTOUPDATER": "1",
+        environment = {**native_environment(), "CLAUDE_CONFIG_DIR": str(config), "DISABLE_AUTOUPDATER": "1",
                        "DISABLE_UPDATES": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
         environment.pop("CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", None)
         if enable_function_hooks:

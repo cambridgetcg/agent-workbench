@@ -2,9 +2,11 @@
 
 Shared local tools for Codex, Claude Code and Hermes: understand the active setup, save a
 workflow, control its execution, compare plugin usefulness, and hand useful
-context to another harness. Version 0.4.0 adds native Hermes workflows and an
-access-token bridge to an existing ChatGPT subscription. Recorded launch evidence,
-native Claude control receipts, parallel execution and the optional Claude pane remain available.
+context to another harness. Version 0.5.0 lets worktree tasks start from a chosen
+revision and records what each attempt left behind, enforces Codex's read-only
+sandbox for read-only tasks, and passes Hermes turn, skill and budget options.
+Native Hermes workflows, the ChatGPT subscription bridge, launch evidence, Claude
+control receipts, parallel execution and the optional Claude pane remain available.
 Python 3.11 or later on macOS or Linux; no runtime dependencies or service account.
 
 ## Start a task
@@ -27,10 +29,12 @@ agent-workbench timeline RUN_ID --limit 20
 `--project PATH` to select another existing project. Choose the harness explicitly:
 `codex`, `claude`, `astra`, `astra-ultra`, `hermes` or `hermes-astra-ultra`. `--prompt-file FILE` reads a prompt
 file; `--prompt-file -` reads bounded UTF-8 text from stdin. Optional `--name`,
-`--goal`, `--model`, `--effort`, `--adapter` and `--workspace` customize this form. The default name
+`--goal`, `--model`, `--effort`, `--adapter`, `--workspace`, `--base-ref`, `--sandbox`,
+`--max-turns`, `--skill` (repeatable), `--run-budget` and `--timeout-seconds` customize this form. The default name
 comes from the first prompt line, capped at 160 characters. The goal defaults to
 the prompt, or to the run name for prompts longer than 20,000 characters; the task
-prompt stays intact. Native model and effort defaults apply unless overridden.
+prompt stays intact and is sent once when the goal repeats it. Native model and
+effort defaults apply unless overridden.
 
 Every command that takes `RUN_ID` accepts a full ID or an unambiguous lowercase
 hexadecimal prefix of at least eight characters. Ambiguous prefixes fail without
@@ -127,7 +131,20 @@ executes without a shell. Optional `timeout_seconds` bounds an individual task.
 Tasks run serially by default. A successor receives the goal
 and bounded predecessor results. Agent tasks also receive recent recorded notes
 as historical context. Existing native authentication, hooks and
-permissions apply; the runner adds no permission-bypass flags. Starting a run
+permissions apply; the runner adds no permission-bypass flags. The one sandbox
+flag it passes is a Codex task's: an explicit `sandbox` (`read-only`,
+`workspace-write` or `danger-full-access`, which turns Codex's sandbox off), or
+`read-only` implied by a read-only workspace. Without either, Codex's own
+configuration applies. Hermes tasks may set `max_turns`, `skills` (a list to
+preload) and `run_budget_seconds`, a graceful wrap-up budget that must be shorter
+than the task's `timeout_seconds`; `run --timeout` is also a hard stop, so give
+it more time than both. Native launches (tasks, plugin evaluations and mod
+checks) do not inherit the launching Claude Code session's identity and messaging
+variables: `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SESSION_ID`,
+`CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ATTENDED`,
+`CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH` and every
+`CLAUDE_CODE_MESSAGING_` variable. Other environment variables, including API
+keys, are inherited; a task's launch record lists the removed names. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise
 the defaults remain in force. Process success alone does not establish that an
@@ -142,10 +159,12 @@ in its manifest, or use `create --workspace MODE` for a single task:
 | Workspace | Ownership and overlap |
 | --- | --- |
 | `shared` (default) | Uses the project checkout; serializes against other shared readers and writers |
-| `read-only` | Uses the project checkout; may overlap other declared readers |
+| `read-only` | Uses the project checkout; may overlap other declared readers. Codex runs in its read-only sandbox |
 | `worktree` | Creates a separate detached Git worktree for each attempt; may overlap either mode |
 
-Read-only is a declaration, **not a sandbox**. Checkout leases coordinate only
+For Claude, Astra, Hermes and command tasks, read-only is a declaration, **not a
+sandbox**. Codex tasks declared read-only launch with `--sandbox read-only`, and
+a writable `sandbox` choice is refused for them. Checkout leases coordinate only
 Workbench controllers using the same state root; they do not lock out editors
 or unrelated processes. Lease contention pauses the run with `workspace_busy`
 after existing work drains, without creating an attempt for the blocked task.
@@ -154,11 +173,32 @@ the owning run, inspect its state, and explicitly `recover` it before reuse.
 Recovery checks recorded process identities; unresolved survivors keep the
 checkout unavailable, and recovery does not retry their work.
 
-Worktrees require a committed Git HEAD. They contain that snapshot and preserve
-the project's path relative to the repository root. Uncommitted and untracked
-source files are not copied. Worktrees remain available after execution, and
-dependency joins neither merge their changes nor copy predecessor worktrees.
-Choose an explicit integration task when results need to be combined.
+Worktrees start from the project's committed HEAD, or from the task's
+`base_ref` (for example `origin/main`; fetch it first). They preserve the
+project's path relative to the repository root. Uncommitted and untracked
+source files are not copied. Every attempt, including a retry, gets a fresh
+worktree; the ref is resolved again each time and recorded as `base_commit`, so
+use a commit SHA as `base_ref` when retries must start identically. To continue
+an attempt's commits, branch at its recorded final HEAD and use that branch as
+the `base_ref` of a new run.
+
+After each attempt, once its processes have ended, Workbench records what the
+worktree holds: final HEAD, branch, commits ahead of and behind the base, whether
+it is dirty, modified and untracked entry counts, and file, insertion and deletion
+counts for tracked files against the base (untracked files are counted, not
+diffed). No file names or contents enter run state. If Git or checkout ownership
+fails, the evidence is marked unavailable and the task's outcome stands. A
+dependent agent task's prompt carries this record as a separate block, labelled
+as written by Workbench rather than the predecessor, with the worktree path.
+Dependency joins neither merge changes nor copy worktrees. Choose an explicit
+integration task when results need to be combined.
+
+Codex's `workspace-write` sandbox lets a worktree task edit files, but Git refuses
+to stage or commit there: a linked worktree keeps its Git metadata in the source
+repository's `.git`, outside the sandbox's writable roots. Workbench does not add
+that directory, because doing so would also expose the repository's hooks and
+configuration. The recorded evidence shows the uncommitted result for an explicit
+integration step.
 
 ```sh
 agent-workbench workspaces RUN_ID
@@ -167,7 +207,8 @@ agent-workbench workspace-remove RUN_ID TASK_ID ATTEMPT_ID
 
 Removal is explicit and accepts only the recorded Workbench-owned worktree when
 execution has ended, the tree is clean, and HEAD still matches its base commit.
-Changed files or new commits cause refusal; nothing is force-removed or merged.
+Changed files, new commits or ignored files (which Git would otherwise delete
+silently) cause refusal; nothing is force-removed or merged.
 Incomplete checkout preparation also remains recorded for inspection and is
 refused by this cleanup command.
 
@@ -189,7 +230,8 @@ dependency blockers, launch/workspace metadata, receipts and explicit next
 actions. `timeline` includes public native events while a task runs: session,
 turn, tool and delegated-task metadata where emitted. It returns the most recent
 20 entries by default, with `--limit` accepting 1–200. The journal retains up to
-2,000 native events and reports dropped counts. It excludes prompts, text output,
+2,000 native events and reports dropped counts. Hermes's streamed text deltas
+appear as one message event per contiguous run of text. It excludes prompts, text output,
 tool arguments, reasoning and note/guidance bodies. Native session pointers
 identify a separate native resume action; they
 do not turn `run` into native conversation resumption.

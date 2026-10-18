@@ -27,6 +27,8 @@ _CODEX_KEYS = ("model", "model_reasoning_effort", "model_provider", "approval_po
 _MODEL_ENV = ("ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
               "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL")
 _AUTH_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+# Inherited by Codex and Hermes tasks; presence only, never values.
+_CODEX_AUTH_ENV = ("OPENAI_API_KEY", "CODEX_API_KEY")
 
 
 def _load(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
@@ -124,7 +126,9 @@ def _version(name, env, home):
                                    timeout=3, env=env, cwd=home, check=False)
         output = (completed.stdout + "\n" + completed.stderr)[:4096]
         match = re.search(r"(?<![\w.])v?(\d{1,4}\.\d{1,4}\.\d{1,4}(?:\.\d{1,4})?)(?![\w.])", output)
-        return {**provenance, "status": "reported" if match else "version_unavailable",
+        # A version-like string from a failed command is not a reported version.
+        status = "version_unavailable" if not match else "reported" if completed.returncode == 0 else "unverified"
+        return {**provenance, "status": status,
                 "version": match.group(1) if match else None, "exit_code": completed.returncode}
     except subprocess.TimeoutExpired:
         return {**provenance, "status": "timed_out"}
@@ -152,7 +156,9 @@ def _codex(home, project, env, now):
     mode = auth.get("auth_mode")
     mode = mode if mode in ("chatgpt", "apikey", "api_key") else "unknown"
     authentication = {"source": root_label + "/auth.json", "file_status": auth_status,
-                      "configured_mode": mode, "access_token": _token_metadata(token, now)}
+                      "configured_mode": mode, "access_token": _token_metadata(token, now),
+                      "process_environment": {key: "present (redacted)" if env[key] else "empty"
+                                              for key in _CODEX_AUTH_ENV if key in env}}
     return {
         "configuration": {"scope": "partial", "sources": rows, "inferred_selected": selected,
                           "precedence_reviewed": "project file over root file; project trust not established",
@@ -413,8 +419,10 @@ def format_report(report) -> str:
     lines = ["Agent Workbench doctor — read-only; no inference or auth refresh"]
     for name, version in report.get("versions", {}).items():
         executable = version.get("selected_executable")
-        lines.append(f"Observed {name}: {version.get('version') or version.get('status', 'unknown')}" +
-                     (f" — {executable}" if executable else ""))
+        label = version.get("version") or version.get("status", "unknown")
+        if version.get("version") and version.get("status") != "reported":
+            label += f" ({version.get('status')}, exit {version.get('exit_code')})"
+        lines.append(f"Observed {name}: {label}" + (f" — {executable}" if executable else ""))
     hermes = report.get("hermes", {})
     for name, entry in hermes.get("executables", {}).items():
         lines.append(f"Selected {name}: {entry.get('selected_executable') or entry.get('status')}")
@@ -426,6 +434,8 @@ def format_report(report) -> str:
     freshness = auth.get("access_token", {})
     expiry = f"; expires {freshness['expires_at']}" if "expires_at" in freshness else ""
     lines.append(f"Codex file auth: {auth.get('configured_mode', 'unknown')}; {freshness.get('status', 'unavailable')}{expiry} (locally decoded, not server-verified)")
+    for key, presence in auth.get("process_environment", {}).items():
+        lines.append(f"Codex auth environment: {key} {presence}")
     for harness, key in (("codex", "inferred_selected"), ("claude", "inferred_selected_settings")):
         config = report.get(harness, {}).get("configuration", {})
         lines.append(f"{harness.title()} configuration: partial view")
