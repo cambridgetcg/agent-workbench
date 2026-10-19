@@ -31,8 +31,9 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   `--format stream-json`. The Ultra profile uses native Hermes tools and sends
   Astra's supported `max` wire effort. Hermes does not inherit Claude Ultracode.
   Optional `max_turns`, `skills` and `run_budget_seconds` (below `timeout_seconds`,
-  with `run --timeout` longer still) map to Hermes chat flags; failed native file
-  edits surface as result warnings.
+  with `run --timeout`, default 1800 seconds, longer still; `run` warns when it
+  cannot reach a budget) map to Hermes chat flags; failed native file edits
+  surface as result warnings.
   Use the token helper's `--check` interface for auth diagnostics; its normal
   stdout is a private credential protocol and must never be run in a terminal
   or included in logs, prompts or reports. See the [Hermes integration guide](../../docs/hermes.md).

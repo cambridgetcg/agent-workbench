@@ -880,6 +880,18 @@ def _set_run_status(store, run_id, status, reason=None):
     return store.update(run_id, change)
 
 
+def budgets_beyond_run_timeout(state, timeout_seconds):
+    """Unfinished tasks whose Hermes wrap-up budget this invocation's limit cannot reach.
+
+    The run deadline is a hard stop, so such a task would be killed before Hermes
+    gives its graceful wrap-up notice. Only certain misses are reported: a shorter
+    budget can still be missed when earlier tasks use the time.
+    """
+    return [{"task_id": task["id"], "run_budget_seconds": task["run_budget_seconds"]}
+            for task in state["tasks"]
+            if task["status"] != "succeeded" and task.get("run_budget_seconds", 0) >= timeout_seconds]
+
+
 def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1):
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be a positive finite number")
@@ -903,7 +915,8 @@ def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1
             state["status"] = "running"
             state["control"]["pause_requested"] = False
             state["control"]["stop_requested"] = False
-            add_event(state, "run_started", timeout_seconds=timeout_seconds, max_launches=max_launches, jobs=jobs)
+            add_event(state, "run_started", timeout_seconds=timeout_seconds, max_launches=max_launches, jobs=jobs,
+                      budgets_beyond_run_timeout=budgets_beyond_run_timeout(state, timeout_seconds))
         store.update(run_id, acquire)
         try:
             from .scheduler import schedule

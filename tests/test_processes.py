@@ -95,6 +95,16 @@ class NativeEnvironmentTests(unittest.TestCase):
         self.assertEqual(host_session_variables(host), ["CLAUDECODE", "CLAUDE_CODE_MESSAGING_FUTURE",
                                                         "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_PID"])
 
+    def test_codex_host_session_markers_are_removed_but_sandbox_and_credentials_stay(self):
+        from agent_workbench.processes import host_session_variables, native_environment
+        host = {"CODEX_CI": "1", "CODEX_SESSION_ID": "s", "CODEX_THREAD_ID": "t", "CODEX_VERSION": "0.156.1",
+                "CODEX_HOME": "/codex", "CODEX_API_KEY": "kept", "CODEX_SANDBOX": "seatbelt",
+                "CODEX_SANDBOX_NETWORK_DISABLED": "1", "PATH": "/bin"}
+        self.assertEqual(native_environment(host), {"CODEX_HOME": "/codex", "CODEX_API_KEY": "kept",
+                                                    "CODEX_SANDBOX": "seatbelt",
+                                                    "CODEX_SANDBOX_NETWORK_DISABLED": "1", "PATH": "/bin"})
+        self.assertEqual(host_session_variables(host), ["CODEX_CI", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_VERSION"])
+
 
 if __name__ == "__main__":
     unittest.main()
