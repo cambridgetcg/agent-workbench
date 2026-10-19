@@ -22,6 +22,9 @@ MAX_NOTES = 500
 TASK_STATUSES = {"pending", "running", "succeeded", "failed", "cancelled", "interrupted"}
 RUN_STATUSES = {"ready", "running", "paused", "stopped", "succeeded", "failed", "interrupted"}
 NOTE_KINDS = {"decision", "question", "evidence", "next"}
+# Task settings named in the generated Markdown summary, in this order.
+SUMMARY_SETTINGS = ("model", "effort", "adapter", "workspace", "base_ref", "sandbox", "timeout_seconds",
+                    "max_turns", "skills", "run_budget_seconds")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:[A-Z0-9 ]* )?PRIVATE KEY-----"),
@@ -171,10 +174,19 @@ def _validate(document):
 
 def _markdown(document):
     # Quote user text as data, escaping raw HTML and Markdown punctuation.
+    def escaped(text):
+        return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", html.escape(text, quote=False))
+
     def quoted(text):
-        escaped = html.escape(text, quote=False)
-        escaped = re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", escaped)
-        return "\n".join("> " + line for line in escaped.splitlines())
+        return "\n".join("> " + line for line in escaped(text).splitlines())
+
+    def setting(value):
+        text = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+        return escaped(" ".join(text.split()))
+
+    def settings(task):
+        # Execution choices beyond harness and dependencies; prompts and argv stay in JSON.
+        return "".join(f"; `{field}` {setting(task[field])}" for field in SUMMARY_SETTINGS if field in task)
 
     manifest = document["manifest"]
     lines = ["# Portable agent handoff", "", quoted(manifest["name"]), "", "## Goal", "", quoted(manifest["goal"]), "",
@@ -183,7 +195,8 @@ def _markdown(document):
     claims = {claim["id"]: claim for claim in document["history"]["tasks"]}
     for task in manifest["tasks"]:
         dependencies = ", ".join(task["depends_on"]) or "none"
-        lines.append(f"- `{task['id']}` — `{claims[task['id']]['status']}`; harness `{task['harness']}`; dependencies: {dependencies}.")
+        lines.append(f"- `{task['id']}` — `{claims[task['id']]['status']}`; harness `{task['harness']}`; "
+                     f"dependencies: {dependencies}{settings(task)}.")
     for kind, title in (("decision", "Decisions"), ("question", "Open questions"), ("evidence", "Explicit evidence"), ("next", "Next steps")):
         lines.extend(["", "## " + title, ""])
         notes = [note for note in document["notes"] if note["kind"] == kind]

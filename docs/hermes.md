@@ -89,7 +89,8 @@ time to wrap up before Workbench's hard task timeout:
 These become `chat --max-turns`, `--skills` (comma-joined) and `--run-budget`.
 `create` offers `--max-turns`, repeatable `--skill`, `--run-budget` and
 `--timeout-seconds`. The invocation's `run --timeout` is also a hard stop, so run
-this example with `run RUN_ID --timeout 3600`. A profile's `agent.max_turns`
+this example with `run RUN_ID --timeout 3600`; the default 1800 seconds would end
+the run first, and `run` warns before starting when that is certain. A profile's `agent.max_turns`
 otherwise applies; when it runs out, Hermes reports an incomplete turn and the
 task fails.
 

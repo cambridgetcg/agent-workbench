@@ -91,6 +91,21 @@ class HandoffTests(unittest.TestCase):
         for expected, actual in zip(tasks, imported["tasks"]):
             self.assertEqual({key: actual[key] for key in expected}, expected)
         self.assertEqual(plan_view(imported)["manifest"]["tasks"][1]["skills"], ["zerone-development"])
+        markdown = self.output.with_suffix(".md").read_text()
+        self.assertIn("dependencies: none; `workspace` worktree; `base_ref` origin/main; `sandbox` workspace\\-write.", markdown)
+        self.assertIn("dependencies: lane; `timeout_seconds` 3300; `max_turns` 150; `skills` zerone\\-development; "
+                      "`run_budget_seconds` 3000.", markdown)
+        self.assertNotIn("Review it", markdown)
+
+    def test_markdown_settings_escape_untrusted_model_text(self):
+        tasks = [{"id": "lane", "harness": "claude", "prompt": "Change it.", "model": "<b>[x](y)</b>\nnext `line`"}]
+        self.state = self.store.create({"version": 1, "name": "Model", "goal": "Escape it.", "tasks": tasks}, self.project)
+        self.export()
+        markdown = self.output.with_suffix(".md").read_text()
+        line = next(line for line in markdown.splitlines() if line.startswith("- `lane`"))
+        self.assertNotIn("<b>", line)
+        self.assertNotIn("[x](", line)
+        self.assertIn("`model` &lt;b&gt;\\[x\\]\\(y\\)&lt;/b&gt; next \\`line\\`.", line)
 
     def test_historical_success_never_becomes_executable_success(self):
         self.populate()

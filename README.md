@@ -2,9 +2,10 @@
 
 Shared local tools for Codex, Claude Code and Hermes: understand the active setup, save a
 workflow, control its execution, compare plugin usefulness, and hand useful
-context to another harness. Version 0.5.0 lets worktree tasks start from a chosen
+context to another harness. Version 0.5 lets worktree tasks start from a chosen
 revision and records what each attempt left behind, enforces Codex's read-only
-sandbox for read-only tasks, and passes Hermes turn, skill and budget options.
+sandbox for read-only tasks, and passes Hermes turn, skill and budget options;
+0.5.1 also keeps a Codex host session's markers out of native launches.
 Native Hermes workflows, the ChatGPT subscription bridge, launch evidence, Claude
 control receipts, parallel execution and the optional Claude pane remain available.
 Python 3.11 or later on macOS or Linux; no runtime dependencies or service account.
@@ -138,12 +139,13 @@ flag it passes is a Codex task's: an explicit `sandbox` (`read-only`,
 configuration applies. Hermes tasks may set `max_turns`, `skills` (a list to
 preload) and `run_budget_seconds`, a graceful wrap-up budget that must be shorter
 than the task's `timeout_seconds`; `run --timeout` is also a hard stop, so give
-it more time than both. Native launches (tasks, plugin evaluations and mod
-checks) do not inherit the launching Claude Code session's identity and messaging
-variables: `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_SESSION_ID`,
-`CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ATTENDED`,
-`CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH` and every
-`CLAUDE_CODE_MESSAGING_` variable. Other environment variables, including API
+it more time than both (`run` warns when it cannot reach a budget). Native
+launches (tasks, plugin evaluations and mod checks) do not inherit the launching
+host session's identity and messaging variables: `CLAUDECODE`, `CLAUDE_PID`,
+`CLAUDE_EFFORT`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`,
+`CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`,
+every `CLAUDE_CODE_MESSAGING_` variable, and Codex's `CODEX_CI`,
+`CODEX_SESSION_ID`, `CODEX_THREAD_ID` and `CODEX_VERSION`. Other environment variables, including API
 keys, are inherited; a task's launch record lists the removed names. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise

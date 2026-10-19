@@ -48,6 +48,10 @@ class GitHelperSafetyTests(unittest.TestCase):
         helper = self.bin / "git"
         helper.write_text(f"#!{sys.executable}\n" + GIT_HELPER)
         helper.chmod(0o700)
+        # Launch the new executable once, untimed: macOS checks a fresh file on
+        # its first run, which can take seconds on a loaded machine.
+        subprocess.run([str(helper)], env={**os.environ, "WORKBENCH_GIT_FIXTURE": "warm"},
+                       capture_output=True, timeout=120, check=True)
         self.child_file = self.root / "child.pid"
         self.environment = patch.dict(os.environ, {"PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
                                                    "WORKBENCH_GIT_CHILD": str(self.child_file)})
@@ -67,7 +71,8 @@ class GitHelperSafetyTests(unittest.TestCase):
             os.kill(int(self.child_file.read_text()), signal.SIGKILL)
 
     def assert_child_stopped(self):
-        deadline = time.monotonic() + 1
+        # Cleanup has already sent SIGKILL; give a loaded machine time to deliver it.
+        deadline = time.monotonic() + 5
         while self.child_running() and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertFalse(self.child_running(), "A Git helper descendant survived owned-group cleanup")
@@ -78,15 +83,17 @@ class GitHelperSafetyTests(unittest.TestCase):
         with patch.object(workspaces, "GIT_TIMEOUT_SECONDS", 0.4), self.assertRaises(workspaces.GitWorkspaceError) as caught:
             workspaces._git(self.root, "status")
         self.assertEqual(caught.exception.reason, "timeout")
-        self.assertLess(time.monotonic() - started, 2)
-        self.assertTrue(self.child_file.exists())
+        # The timeout plus cleanup, far below the helper's 60-second sleep.
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertTrue(self.child_file.exists(), "The helper had not started its descendant")
         self.assert_child_stopped()
 
     def test_successful_parent_does_not_leave_inherited_pipe_helper_running(self):
         os.environ["WORKBENCH_GIT_FIXTURE"] = "parent-exit"
         started = time.monotonic()
         self.assertEqual(workspaces._git(self.root, "status"), "selected-metadata")
-        self.assertLess(time.monotonic() - started, 2)
+        # Well before the 30-second Git timeout the inherited pipe would reach.
+        self.assertLess(time.monotonic() - started, 10)
         self.assert_child_stopped()
 
     def test_nonzero_exit_redacts_stderr_and_cleans_descendants(self):
@@ -112,7 +119,8 @@ class GitHelperSafetyTests(unittest.TestCase):
                     workspaces._git(self.root, "status")
                 self.assertEqual(caught.exception.reason, "output_limit")
                 self.assertNotIn("PRIVATE_HELPER_BODY", str(caught.exception))
-                self.assertLess(time.monotonic() - started, 2)
+                # Stopped by the limit, well before the 30-second Git timeout.
+                self.assertLess(time.monotonic() - started, 10)
 
 
 class WorkspaceOwnershipTests(unittest.TestCase):
