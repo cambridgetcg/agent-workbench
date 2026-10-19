@@ -145,7 +145,8 @@ host session's identity and messaging variables: `CLAUDECODE`, `CLAUDE_PID`,
 `CLAUDE_EFFORT`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`,
 `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`,
 every `CLAUDE_CODE_MESSAGING_` variable, and Codex's `CODEX_CI`,
-`CODEX_SESSION_ID`, `CODEX_THREAD_ID` and `CODEX_VERSION`. Other environment variables, including API
+`CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_VERSION`,
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`. Other environment variables, including API
 keys, are inherited; a task's launch record lists the removed names. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise

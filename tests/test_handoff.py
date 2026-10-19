@@ -84,6 +84,9 @@ class HandoffTests(unittest.TestCase):
              "base_ref": "origin/main", "sandbox": "workspace-write"},
             {"id": "astra", "harness": "hermes-astra-ultra", "prompt": "Review it.", "depends_on": ["lane"],
              "max_turns": 150, "skills": ["zerone-development"], "run_budget_seconds": 3000, "timeout_seconds": 3300},
+            {"id": "pane", "harness": "claude", "prompt": "Watch it.", "depends_on": ["astra"], "model": "opus",
+             "effort": "high", "adapter": "duplex", "workspace": "read-only"},
+            {"id": "pair", "harness": "hermes", "prompt": "Pair on it.", "depends_on": ["pane"], "skills": ["one", "two"]},
         ]
         self.state = self.store.create({"version": 1, "name": "Options", "goal": "Carry options.", "tasks": deepcopy(tasks)}, self.project)
         self.export()
@@ -95,17 +98,21 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("dependencies: none; `workspace` worktree; `base_ref` origin/main; `sandbox` workspace\\-write.", markdown)
         self.assertIn("dependencies: lane; `timeout_seconds` 3300; `max_turns` 150; `skills` zerone\\-development; "
                       "`run_budget_seconds` 3000.", markdown)
+        self.assertIn("dependencies: astra; `model` opus; `effort` high; `adapter` duplex; `workspace` read\\-only.", markdown)
+        self.assertIn("dependencies: pane; `skills` one, two.", markdown)
         self.assertNotIn("Review it", markdown)
 
     def test_markdown_settings_escape_untrusted_model_text(self):
-        tasks = [{"id": "lane", "harness": "claude", "prompt": "Change it.", "model": "<b>[x](y)</b>\nnext `line`"}]
+        tasks = [{"id": "lane", "harness": "claude", "prompt": "Change it.",
+                  "model": "<b>[x](y)</b>\nnext `line`\u202e\u0085\u200b!", "effort": "high"}]
         self.state = self.store.create({"version": 1, "name": "Model", "goal": "Escape it.", "tasks": tasks}, self.project)
         self.export()
         markdown = self.output.with_suffix(".md").read_text()
         line = next(line for line in markdown.splitlines() if line.startswith("- `lane`"))
         self.assertNotIn("<b>", line)
         self.assertNotIn("[x](", line)
-        self.assertIn("`model` &lt;b&gt;\\[x\\]\\(y\\)&lt;/b&gt; next \\`line\\`.", line)
+        # U+0085 is whitespace and collapses; the bidi override and zero-width space are replaced.
+        self.assertIn("`model` &lt;b&gt;\\[x\\]\\(y\\)&lt;/b&gt; next \\`line\\`\ufffd \ufffd\\!; `effort` high.", line)
 
     def test_historical_success_never_becomes_executable_success(self):
         self.populate()

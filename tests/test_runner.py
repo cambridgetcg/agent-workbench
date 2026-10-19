@@ -286,17 +286,24 @@ class RunnerTests(unittest.TestCase):
 
     def test_run_start_records_hermes_budgets_the_run_timeout_cannot_reach(self):
         from agent_workbench.runner import budgets_beyond_run_timeout
-        run_id = self.create([self.agent("late", "hermes", run_budget_seconds=3000, timeout_seconds=3300),
+        run_id = self.create([self.agent("late", "hermes", run_budget_seconds=900, timeout_seconds=1200),
                               self.agent("early", "hermes", run_budget_seconds=60, timeout_seconds=120),
                               self.agent("plain", "codex")])
-        self.assertEqual(budgets_beyond_run_timeout(self.store.read(run_id), 3000),
-                         [{"task_id": "late", "run_budget_seconds": 3000}])
+        self.assertEqual(budgets_beyond_run_timeout(self.store.read(run_id), 60),
+                         [{"task_id": "late", "run_budget_seconds": 900}, {"task_id": "early", "run_budget_seconds": 60}])
+        self.assertEqual(budgets_beyond_run_timeout(self.store.read(run_id), 0.5),
+                         [{"task_id": "late", "run_budget_seconds": 900}, {"task_id": "early", "run_budget_seconds": 60}])
         state = run_workflow(self.store, run_id, timeout_seconds=600)
         self.assertEqual(state["status"], "succeeded")
         started = next(event for event in state["events"] if event["kind"] == "run_started")
-        self.assertEqual(started["budgets_beyond_run_timeout"], [{"task_id": "late", "run_budget_seconds": 3000}])
+        self.assertEqual(started["budgets_beyond_run_timeout"], [{"task_id": "late", "run_budget_seconds": 900}])
         # Finished tasks will not run again, so they no longer warrant a warning.
         self.assertEqual(budgets_beyond_run_timeout(state, 600), [])
+        def failed(current):
+            current["tasks"][0]["status"] = "failed"
+        self.store.update(run_id, failed)
+        # A task awaiting explicit retry cannot be launched by this invocation.
+        self.assertEqual(budgets_beyond_run_timeout(self.store.read(run_id), 600), [])
 
     def test_codex_sandbox_follows_read_only_declaration_and_explicit_choice(self):
         run_id = self.create([

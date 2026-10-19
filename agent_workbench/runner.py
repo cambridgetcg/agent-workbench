@@ -881,15 +881,17 @@ def _set_run_status(store, run_id, status, reason=None):
 
 
 def budgets_beyond_run_timeout(state, timeout_seconds):
-    """Unfinished tasks whose Hermes wrap-up budget this invocation's limit cannot reach.
+    """Pending tasks whose Hermes wrap-up budget this invocation's limit cannot reach.
 
     The run deadline is a hard stop, so such a task would be killed before Hermes
     gives its graceful wrap-up notice. Only certain misses are reported: a shorter
-    budget can still be missed when earlier tasks use the time.
+    budget can still be missed when earlier tasks use the time. Tasks needing an
+    explicit retry are left out; this invocation cannot launch them.
     """
     return [{"task_id": task["id"], "run_budget_seconds": task["run_budget_seconds"]}
             for task in state["tasks"]
-            if task["status"] != "succeeded" and task.get("run_budget_seconds", 0) >= timeout_seconds]
+            if task["status"] == "pending" and "run_budget_seconds" in task
+            and task["run_budget_seconds"] >= timeout_seconds]
 
 
 def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1):

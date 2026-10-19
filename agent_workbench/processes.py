@@ -20,12 +20,15 @@ import time
 
 # Identity and messaging channel of the host session that started Workbench:
 # Claude Code, or Codex when Workbench runs from its plugin (Codex 0.156 sets the
-# CODEX_ markers on every command it runs). A native launch is a separate session,
-# so these are never inherited. CODEX_SANDBOX* stay: a sandbox does bind children.
+# first four CODEX_ markers on every command it runs; the originator override and
+# escalation socket are its entrypoint and channel back to the parent). A native
+# launch is a separate session, so these are never inherited. CODEX_SANDBOX* and
+# the network proxy variables stay: a sandbox does bind the processes inside it.
 HOST_SESSION_ENV = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
                     "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
                     "CLAUDE_PID", "CLAUDE_EFFORT",
-                    "CODEX_CI", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_VERSION")
+                    "CODEX_CI", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_VERSION",
+                    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_ESCALATE_SOCKET")
 HOST_SESSION_PREFIXES = ("CLAUDE_CODE_MESSAGING_",)
 
 

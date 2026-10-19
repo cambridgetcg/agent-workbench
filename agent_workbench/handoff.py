@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import unicodedata
 
 from .store import TASK_FIELDS, add_event, now, validate_manifest
 
@@ -182,7 +183,11 @@ def _markdown(document):
 
     def setting(value):
         text = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
-        return escaped(" ".join(text.split()))
+        # One line, with control and format characters (bidi overrides included)
+        # replaced so free text cannot reorder or hide the settings after it.
+        text = " ".join(text.split())
+        text = "".join("\ufffd" if unicodedata.category(char) in {"Cc", "Cf"} else char for char in text)
+        return escaped(text)
 
     def settings(task):
         # Execution choices beyond harness and dependencies; prompts and argv stay in JSON.
