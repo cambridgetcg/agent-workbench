@@ -346,7 +346,9 @@ def main(argv=None) -> int:
             print_timeline(timeline_view(store.read(args.run_id), limit=args.limit), args.json)
         elif args.command == "run":
             from .runner import budgets_beyond_run_timeout, run_workflow
-            for late in budgets_beyond_run_timeout(store.read(args.run_id), args.timeout):
+            # run_workflow rejects a non-positive limit; warn only about a usable one.
+            late_budgets = budgets_beyond_run_timeout(store.read(args.run_id), args.timeout) if args.timeout > 0 else []
+            for late in late_budgets:
                 print(f"agent-workbench: warning: task {safe_terminal(late['task_id'])} has a Hermes run budget of "
                       f"{late['run_budget_seconds']} s, but run --timeout {args.timeout:g} s stops the run first, "
                       "so Hermes cannot wrap up; raise --timeout above the budget.", file=sys.stderr)

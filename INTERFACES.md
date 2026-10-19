@@ -56,9 +56,10 @@ native session pointers, bounded public events and control receipts.
 `run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1) -> dict`
 executes dependency-ready tasks with 1–16 bounded workers, preserving
 already-succeeded tasks. Its `run_started` event lists
-`budgets_beyond_run_timeout(state, timeout_seconds)`: unfinished tasks whose Hermes
+`budgets_beyond_run_timeout(state, timeout_seconds)`: pending tasks whose Hermes
 `run_budget_seconds` is not shorter than the invocation's limit, which would end
-the run before Hermes could wrap up; the CLI also warns about them before running. Own a per-run controller lock, never steal a live run.
+the run before Hermes could wrap up; the CLI also warns about them before running
+when the limit is positive. Own a per-run controller lock, never steal a live run.
 The default is serial. `scheduler.schedule(store, run_id, deadline, interrupted,
 max_launches, jobs) -> (status, reason)` runs inside that lock and signal scope.
 It honors checkout compatibility, joins dependencies, drains workers on pause
@@ -73,8 +74,9 @@ summary, or says that evidence is unavailable. `native_sandbox(task)` returns th
 Codex sandbox flag value or None. `processes.native_environment()` omits the
 launching host session's identity and messaging variables
 (`HOST_SESSION_ENV`, which includes Codex's `CODEX_CI`, `CODEX_SESSION_ID`,
-`CODEX_THREAD_ID` and `CODEX_VERSION` markers, plus every `CLAUDE_CODE_MESSAGING_`
-name; `CODEX_HOME`, credentials and `CODEX_SANDBOX*` stay) for tasks, plugin
+`CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and
+`CODEX_ESCALATE_SOCKET`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
+credentials, `CODEX_SANDBOX*` and Codex's network proxy variables stay) for tasks, plugin
 evaluations and mod checks; a task's launch record lists the removed names.
 Launch inspection passes `update_check=False`, so Hermes's update-checking
 `--version` is not probed during runs.
@@ -305,8 +307,8 @@ is requested; tests execute the selected plugin's test code with its mocked host
 
 `export_handoff(store, run_id, output: Path) -> dict` writes portable versioned
 JSON plus sibling Markdown containing goal, decisions, questions, task statuses
-with their escaped execution settings (`handoff.SUMMARY_SETTINGS`; prompts and argv
-stay in JSON), explicit evidence and next steps. No credentials, raw traces or hidden reasoning.
+with their execution settings (`handoff.SUMMARY_SETTINGS`, escaped, with control
+and format characters replaced; prompts and argv stay in JSON), explicit evidence and next steps. No credentials, raw traces or hidden reasoning.
 Include digest to detect accidental modifications, not a signature/trust claim.
 `import_handoff(store, source: Path, project: Path) -> dict` validates and creates
 a new local run with provenance. Imported completion claims remain historical;

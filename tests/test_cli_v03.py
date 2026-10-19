@@ -154,7 +154,8 @@ class CliV03Tests(unittest.TestCase):
                                      "run_budget_seconds": 2400, "timeout_seconds": 3000}])
         observed = []
         def fake_run(store, ident, **kwargs):
-            observed.append(kwargs["timeout_seconds"])
+            # The warning must already be visible when the run starts.
+            observed.append((kwargs["timeout_seconds"], "run budget of 2400 s" in sys.stderr.getvalue()))
             return store.read(ident)
         with patch("agent_workbench.runner.run_workflow", side_effect=fake_run):
             code, _, error = self.cli("run", run_id)
@@ -162,7 +163,12 @@ class CliV03Tests(unittest.TestCase):
             self.assertIn("task astra has a Hermes run budget of 2400 s, but run --timeout 1800 s stops the run first", error)
             code, _, error = self.cli("run", run_id, "--timeout", "3300")
             self.assertEqual((code, error), (2, ""))
-        self.assertEqual(observed, [1800, 3300])
+        self.assertEqual(observed, [(1800, True), (3300, False)])
+        # An invalid limit gets run_workflow's own error, not a warning or a traceback.
+        for limit in ("0", "-5"):
+            code, _, error = self.cli("run", run_id, "--timeout", limit)
+            self.assertEqual(code, 1)
+            self.assertEqual(error, "agent-workbench: timeout_seconds must be a positive finite number\n")
 
     def test_caller_request_id_is_durable_and_identical_reuse_does_not_enqueue(self):
         run_id = self.create()
