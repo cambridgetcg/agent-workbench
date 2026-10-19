@@ -74,8 +74,8 @@ summary, or says that evidence is unavailable. `native_sandbox(task)` returns th
 Codex sandbox flag value or None. `processes.native_environment()` omits the
 launching host session's identity and messaging variables
 (`HOST_SESSION_ENV`, which includes Codex's `CODEX_CI`, `CODEX_SESSION_ID`,
-`CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and
-`CODEX_ESCALATE_SOCKET`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
+`CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_TOOL_CALL_ID`,
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
 credentials, `CODEX_SANDBOX*` and Codex's network proxy variables stay) for tasks, plugin
 evaluations and mod checks; a task's launch record lists the removed names.
 Launch inspection passes `update_check=False`, so Hermes's update-checking
