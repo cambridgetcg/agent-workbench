@@ -185,9 +185,9 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("run_id")
     launch.add_argument("task_id")
     launch.add_argument("--attempt", help="Attempt ID (default: latest for this task)")
-    workspaces = sub.add_parser("workspaces", help="List retained per-attempt checkout ownership")
+    workspaces = sub.add_parser("workspaces", help="List per-attempt checkout ownership; path_exists and dirty are observed now")
     workspaces.add_argument("run_id")
-    cleanup = sub.add_parser("workspace-remove", help="Explicitly remove an unchanged Workbench-owned worktree")
+    cleanup = sub.add_parser("workspace-remove", help="Explicitly remove a clean Workbench-owned worktree at its base commit or with HEAD on a remote-tracking ref")
     cleanup.add_argument("run_id")
     cleanup.add_argument("task_id")
     cleanup.add_argument("attempt_id")
@@ -330,7 +330,7 @@ def main(argv=None) -> int:
             print(json.dumps(redacted_view(load_manifest(path)), indent=2))
         elif args.command == "workspaces":
             from .workspaces import workspace_view
-            print(json.dumps(redacted_view(workspace_view(store.read(args.run_id))), indent=2))
+            print(json.dumps(redacted_view(workspace_view(store.read(args.run_id), observe=True)), indent=2))
         elif args.command == "workspace-remove":
             from .workspaces import remove_clean
             print_status(remove_clean(store, args.run_id, args.task_id, args.attempt_id))

@@ -46,8 +46,10 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   explicit `base_ref` such as `origin/main`, without uncommitted source files.
   Workbench records each attempt's final HEAD, branch and change counts and gives
   dependent prompts that record as a separate block. Dependencies do not merge worktrees. Use
-  `workspaces RUN` to inspect ownership; `workspace-remove RUN TASK ATTEMPT`
-  removes only an inactive unchanged owned tree without ignored files.
+  `workspaces RUN` to inspect ownership (it measures `path_exists` and `dirty` now);
+  `workspace-remove RUN TASK ATTEMPT` removes only an inactive, clean owned tree
+  without ignored files whose HEAD is its base or is on a remote-tracking ref.
+  Never use `git worktree remove` on Workbench trees: run state would go stale.
   Checkout leases cover Workbench controllers sharing the same state root.
 - Time and launch limits bound one invocation, not tokens or spend. `pause`
   drains active tasks; `stop` terminates owned active process groups. Failure

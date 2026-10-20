@@ -131,11 +131,21 @@ not just exit code zero with a JSON error. Command success is exit code zero.
   "unavailable"` with an `evidence_failure` code, and the task outcome stands.
   Status calls pass `--untracked-files=normal` so local Git configuration cannot
   hide untracked files.
-- `workspace_view(state) -> dict` lists recorded paths, ownership and retention.
+- `workspace_view(state, *, observe=False) -> dict` lists recorded paths, ownership and retention.
+  With `observe=True` (the `workspaces` command) each owned worktree also gets
+  `observe_workspace(workspace)`: live `path_exists` and `dirty` (None, with an
+  `observation_failure` code, when the tree is gone or is not its own checkout
+  root), the recorded values as `recorded_path_exists`/`recorded_dirty`, and an
+  `observed_at` time on the view. Read-only; no lease is taken.
 - `remove_clean(store, run_id, task_id, attempt_id) -> dict` takes the controller
-  lock and removes only an inactive, unchanged, owned worktree at its recorded
-  base commit while also holding the checkout's exclusive lease, including
-  against other runs using a retained worktree. It refuses dirty trees, new commits, ignored files,
+  lock and removes only an inactive, clean, owned worktree whose HEAD is its
+  recorded base commit or is contained in a local remote-tracking ref, while
+  also holding the checkout's exclusive lease, including against other runs
+  using a retained worktree. It records `removal_basis` (`unchanged_base` or
+  `head_on_remote_ref`) and `removed_head`. Automatic cleanup, if any is ever
+  built, may remove only a clean tree whose HEAD a remote-tracking ref
+  contains. It refuses dirty trees, commits
+  no remote-tracking ref contains, ignored files,
   incomplete preparation and ownership mismatches. Git helpers use bounded output, owned
   process groups and `GIT_OPTIONAL_LOCKS=0`.
 

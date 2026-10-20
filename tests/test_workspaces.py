@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -267,6 +269,76 @@ run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
             workspaces.remove_clean(self.store, run_id, "work", attempt_id)
         self.assertTrue(checkout.is_dir())
         self.assertTrue(self.store.read(run_id)["tasks"][0]["attempts"][0]["workspace"]["retained"])
+
+    def observed_row(self, run_id):
+        return workspaces.workspace_view(self.store.read(run_id), observe=True)["workspaces"][0]
+
+    def test_workspaces_view_observes_live_state_not_recorded_state(self):
+        run_id, attempt_id, checkout = self.owned()
+        # Attempt-end evidence said dirty; the tree has been cleaned since.
+        self.store.update(run_id, lambda state: state["tasks"][0]["attempts"][0]["workspace"].update(dirty=True))
+        row = self.observed_row(run_id)
+        self.assertEqual((row["path_exists"], row["dirty"]), (True, False))
+        self.assertEqual((row["recorded_path_exists"], row["recorded_dirty"]), (True, True))
+        self.assertIn("observed_at", workspaces.workspace_view(self.store.read(run_id), observe=True))
+        (checkout / "late.txt").write_text("written after the attempt\n")
+        self.assertTrue(self.observed_row(run_id)["dirty"])
+        # A tree removed outside Workbench is reported gone, not present and dirty.
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        row = self.observed_row(run_id)
+        self.assertEqual((row["path_exists"], row["dirty"], row["observation_failure"]),
+                         (False, None, "checkout_missing"))
+        recorded = workspaces.workspace_view(self.store.read(run_id))["workspaces"][0]
+        self.assertEqual((recorded["path_exists"], recorded["dirty"]), (True, True))
+        self.assertNotIn("recorded_dirty", recorded)
+
+    def test_workspaces_command_reports_observed_state(self):
+        from agent_workbench.cli import main
+        run_id, attempt_id, checkout = self.owned()
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--state-dir", str(self.store.root), "workspaces", run_id]), 0)
+        row = json.loads(output.getvalue())["workspaces"][0]
+        self.assertEqual((row["path_exists"], row["dirty"], row["recorded_path_exists"]), (False, None, True))
+
+    def test_workspaces_view_never_reports_an_enclosing_repository(self):
+        run_id, attempt_id, checkout = self.owned()
+        self.git(self.root, "init", "-q")  # Encloses the state directory.
+        (checkout / ".git").unlink()
+        row = self.observed_row(run_id)
+        self.assertEqual((row["path_exists"], row["dirty"], row["observation_failure"]),
+                         (True, None, "not_checkout_root"))
+
+    def test_cleanup_accepts_new_commits_only_when_a_remote_ref_contains_them(self):
+        run_id, attempt_id, checkout = self.owned()
+        (checkout / "tracked.txt").write_text("result\n")
+        self.git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "commit", "-qam", "result")
+        head = self.git(checkout, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(ValueError, "no remote-tracking ref contains"):
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.git(self.project, "update-ref", "refs/heads/kept-locally", head)
+        with self.assertRaisesRegex(ValueError, "no remote-tracking ref contains"):
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        # As a fetch would record a pushed branch; no remote is contacted.
+        self.git(self.project, "update-ref", "refs/remotes/origin/result", head)
+        (checkout / "notes.txt").write_text("uncommitted\n")
+        with self.assertRaisesRegex(ValueError, "changes or new commits"):
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        (checkout / "notes.txt").unlink()
+        state = workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertFalse(checkout.exists())
+        workspace = state["tasks"][0]["attempts"][0]["workspace"]
+        self.assertEqual((workspace["retained"], workspace["removal_basis"], workspace["removed_head"]),
+                         (False, "head_on_remote_ref", head))
+        self.assertEqual(state["events"][-1]["removal_basis"], "head_on_remote_ref")
+
+    def test_cleanup_records_unchanged_base_as_its_basis(self):
+        run_id, attempt_id, checkout = self.owned()
+        state = workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertFalse(checkout.exists())
+        self.assertEqual(state["tasks"][0]["attempts"][0]["workspace"]["removal_basis"], "unchanged_base")
 
     def test_controller_crash_keeps_checkout_owned_until_explicit_recovery(self):
         from agent_workbench.runner import recover_run, run_workflow

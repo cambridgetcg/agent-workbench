@@ -49,10 +49,12 @@ work finish. The controller joins all workers before releasing ownership.
 A graph join never merges worktrees or copies predecessor files: integration is
 an explicit task with its own verification.
 
-`workspaces RUN` lists retained ownership and checkout metadata.
+`workspaces RUN` lists retained ownership and checkout metadata, with
+`path_exists` and `dirty` measured when it runs.
 `workspace-remove RUN TASK ATTEMPT` removes only a recorded owned tree after
-execution, while clean, free of ignored files and still at its recorded base
-commit. Dirty work, ignored files or new commits are preserved; there is no
+execution, while clean, free of ignored files, and either still at its recorded
+base commit or with HEAD contained in a remote-tracking ref. Dirty work, ignored
+files or commits no remote-tracking ref contains are preserved; there is no
 automatic cleanup or force removal.
 
 Acceptance evidence: real synthetic commands and temporary Git repositories
