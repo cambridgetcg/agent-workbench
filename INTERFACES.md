@@ -133,10 +133,14 @@ not just exit code zero with a JSON error. Command success is exit code zero.
   hide untracked files.
 - `workspace_view(state, *, observe=False) -> dict` lists recorded paths, ownership and retention.
   With `observe=True` (the `workspaces` command) each owned worktree also gets
-  `observe_workspace(workspace)`: live `path_exists` and `dirty` (None, with an
-  `observation_failure` code, when the tree is gone or is not its own checkout
-  root), the recorded values as `recorded_path_exists`/`recorded_dirty`, and an
-  `observed_at` time on the view. Read-only; no lease is taken.
+  `observe_workspace(workspace)`: live `path_exists` (the recorded path is a
+  directory) and `dirty`, the recorded values as
+  `recorded_path_exists`/`recorded_dirty`, and an `observed_at` time on the
+  view. `dirty` is None, with an `observation_failure` code, unless the path is
+  the recorded checkout: `checkout_missing`, `not_checkout_root`,
+  `ownership_path_mismatch` (the root or its parent is a symbolic link) or
+  `git_ownership_mismatch` (its Git common directory is not the source
+  repository's, the same check `remove_clean` makes). Read-only; no lease is taken.
 - `remove_clean(store, run_id, task_id, attempt_id) -> dict` takes the controller
   lock and removes only an inactive, clean, owned worktree whose HEAD is its
   recorded base commit or is contained in a local remote-tracking ref, while

@@ -212,6 +212,10 @@ agent-workbench workspace-remove RUN_ID TASK_ID ATTEMPT_ID
 `dirty` say what is on disk now, and `recorded_path_exists` and
 `recorded_dirty` keep what preparation and the attempt's end recorded. A tree
 removed outside Workbench shows `path_exists: false` and `dirty: null`.
+`dirty` is measured only for the recorded checkout itself: a directory,
+symbolic link or other repository found at the recorded path shows
+`dirty: null` with an `observation_failure` code (`not_checkout_root`,
+`ownership_path_mismatch` or `git_ownership_mismatch`).
 
 Removal is explicit and accepts only the recorded Workbench-owned worktree when
 execution has ended, the tree is clean, and HEAD either still matches its base

@@ -571,16 +571,34 @@ def record_worktree_evidence(store, run_id, task_id, attempt_id, workspace, *, s
     return workspace
 
 
+def _shares_source_git(root, source_root):
+    """True when the checkout at ``root`` uses ``source_root``'s Git common directory.
+
+    A recorded path alone does not prove the checkout there is still the one
+    Workbench added: a repository created, cloned or linked in its place after
+    removal is its own checkout root too. Removal and observation both ask this.
+    """
+    source = Path(source_root).resolve()
+    common = Path(_git(root, "rev-parse", "--git-common-dir"))
+    source_common = Path(_git(source, "rev-parse", "--git-common-dir"))
+    common = common if common.is_absolute() else root / common
+    source_common = source_common if source_common.is_absolute() else source / source_common
+    return common.resolve() == source_common.resolve()
+
+
 def observe_workspace(workspace):
     """Measure an owned worktree as it is now, not as it was recorded.
 
     Run state records ``path_exists`` at preparation and ``dirty`` at the
     attempt's end; a tree removed or edited later makes both stale. This
     returns live ``path_exists`` and ``dirty`` and keeps the recorded values
-    as ``recorded_path_exists`` and ``recorded_dirty``. ``dirty`` is None when
-    the tree is gone or cannot be read as its own checkout, with
-    ``observation_failure`` saying why, never a guess. Read-only: status runs
-    with ``GIT_OPTIONAL_LOCKS=0`` and takes no Workbench lease.
+    as ``recorded_path_exists`` and ``recorded_dirty``. ``path_exists`` says
+    only that the recorded path is a directory. ``dirty`` is measured only for
+    the recorded checkout itself; when the tree is gone, is not its own
+    checkout root, is reached through a symbolic link, or belongs to another
+    repository, ``dirty`` is None and ``observation_failure`` says why, never
+    a guess. Read-only: Git runs with ``GIT_OPTIONAL_LOCKS=0`` and no
+    Workbench lease is taken.
     """
     if workspace.get("mode") != "worktree" or not workspace.get("owned"):
         return {}
@@ -590,10 +608,18 @@ def observe_workspace(workspace):
     if not root.is_dir():
         observed["observation_failure"] = "checkout_missing"
         return observed
+    # Workbench created the tree as a real directory under a real parent;
+    # remove_clean refuses links here too.
+    if root.is_symlink() or root.parent.is_symlink():
+        observed["observation_failure"] = "ownership_path_mismatch"
+        return observed
     try:
         # Outside its checkout, Git would report an enclosing repository instead.
         if Path(_git(root, "rev-parse", "--show-toplevel")).resolve() != root.resolve():
             observed["observation_failure"] = "not_checkout_root"
+            return observed
+        if not _shares_source_git(root, workspace["source_root"]):
+            observed["observation_failure"] = "git_ownership_mismatch"
             return observed
         observed["dirty"] = bool(_git(root, "status", "--porcelain", "--untracked-files=normal"))
     except GitWorkspaceError as exc:
@@ -664,12 +690,7 @@ def remove_clean(store, run_id, task_id, attempt_id):
                 raise ValueError("Workspace is not its recorded Git checkout root")
             # A state path alone does not prove this checkout still belongs to
             # the source repository. Verify Git's common directory as well.
-            source = Path(workspace["source_root"]).resolve()
-            common = Path(_git(root, "rev-parse", "--git-common-dir"))
-            source_common = Path(_git(source, "rev-parse", "--git-common-dir"))
-            common = common if common.is_absolute() else root / common
-            source_common = source_common if source_common.is_absolute() else source / source_common
-            if common.resolve() != source_common.resolve():
+            if not _shares_source_git(root, workspace["source_root"]):
                 raise ValueError("Workspace Git ownership does not match its source repository")
             # Explicit modes: status.showUntrackedFiles=no must not hide files.
             if _git(root, "status", "--porcelain", "--untracked-files=normal"):

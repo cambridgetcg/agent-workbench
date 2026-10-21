@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -309,6 +310,28 @@ run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
         row = self.observed_row(run_id)
         self.assertEqual((row["path_exists"], row["dirty"], row["observation_failure"]),
                          (True, None, "not_checkout_root"))
+
+    def test_workspaces_view_never_reports_a_replacement_as_the_recorded_checkout(self):
+        run_id, attempt_id, checkout = self.owned()
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        # An unrelated repository created where the removed tree was is its own
+        # checkout root, but its Git common directory is not the source's.
+        self.repository(checkout)
+        row = self.observed_row(run_id)
+        self.assertEqual((row["path_exists"], row["dirty"], row["observation_failure"]),
+                         (True, None, "git_ownership_mismatch"))
+        # A symbolic link to another worktree of the same source shares the
+        # common directory; the recorded path itself must not be a link.
+        shutil.rmtree(checkout)
+        sibling = self.root / "sibling"
+        self.git(self.project, "worktree", "add", "--detach", str(sibling), "HEAD")
+        checkout.symlink_to(sibling, target_is_directory=True)
+        row = self.observed_row(run_id)
+        self.assertEqual((row["path_exists"], row["dirty"], row["observation_failure"]),
+                         (True, None, "ownership_path_mismatch"))
+        with self.assertRaisesRegex(ValueError, "ownership path"):
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertTrue((sibling / "tracked.txt").is_file())
 
     def test_cleanup_accepts_new_commits_only_when_a_remote_ref_contains_them(self):
         run_id, attempt_id, checkout = self.owned()
