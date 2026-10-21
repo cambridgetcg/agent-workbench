@@ -208,10 +208,25 @@ agent-workbench workspaces RUN_ID
 agent-workbench workspace-remove RUN_ID TASK_ID ATTEMPT_ID
 ```
 
+`workspaces` measures each owned worktree when it runs: `path_exists` and
+`dirty` say what is on disk now, and `recorded_path_exists` and
+`recorded_dirty` keep what preparation and the attempt's end recorded. A tree
+removed outside Workbench shows `path_exists: false` and `dirty: null`.
+`dirty` is measured only for the recorded checkout itself: a directory,
+symbolic link or other repository found at the recorded path shows
+`dirty: null` with an `observation_failure` code (`not_checkout_root`,
+`ownership_path_mismatch` or `git_ownership_mismatch`).
+
 Removal is explicit and accepts only the recorded Workbench-owned worktree when
-execution has ended, the tree is clean, and HEAD still matches its base commit.
-Changed files, new commits or ignored files (which Git would otherwise delete
-silently) cause refusal; nothing is force-removed or merged.
+execution has ended, the tree is clean, and HEAD either still matches its base
+commit or is contained in a remote-tracking ref (pushed, as of the last fetch;
+no remote is contacted). Changed files, commits no remote-tracking ref contains,
+or ignored files (which Git would otherwise delete silently) cause refusal;
+nothing is force-removed or merged. The run records `removal_basis`
+(`unchanged_base` or `head_on_remote_ref`). Use this command rather than
+`git worktree remove`, which leaves run state claiming the tree still exists.
+Workbench never removes a worktree on its own; any automatic cleanup built on
+it should accept exactly a clean tree with HEAD on a remote-tracking ref.
 Incomplete checkout preparation also remains recorded for inspection and is
 refused by this cleanup command.
 

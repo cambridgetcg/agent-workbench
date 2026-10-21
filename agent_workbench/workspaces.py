@@ -571,16 +571,93 @@ def record_worktree_evidence(store, run_id, task_id, attempt_id, workspace, *, s
     return workspace
 
 
-def workspace_view(state):
+def _shares_source_git(root, source_root):
+    """True when the checkout at ``root`` uses ``source_root``'s Git common directory.
+
+    A recorded path alone does not prove the checkout there is still the one
+    Workbench added: a repository created, cloned or linked in its place after
+    removal is its own checkout root too. Removal and observation both ask this.
+    """
+    source = Path(source_root).resolve()
+    common = Path(_git(root, "rev-parse", "--git-common-dir"))
+    source_common = Path(_git(source, "rev-parse", "--git-common-dir"))
+    common = common if common.is_absolute() else root / common
+    source_common = source_common if source_common.is_absolute() else source / source_common
+    return common.resolve() == source_common.resolve()
+
+
+def observe_workspace(workspace):
+    """Measure an owned worktree as it is now, not as it was recorded.
+
+    Run state records ``path_exists`` at preparation and ``dirty`` at the
+    attempt's end; a tree removed or edited later makes both stale. This
+    returns live ``path_exists`` and ``dirty`` and keeps the recorded values
+    as ``recorded_path_exists`` and ``recorded_dirty``. ``path_exists`` says
+    only that the recorded path is a directory. ``dirty`` is measured only for
+    the recorded checkout itself; when the tree is gone, is not its own
+    checkout root, is reached through a symbolic link, or belongs to another
+    repository, ``dirty`` is None and ``observation_failure`` says why, never
+    a guess. Read-only: Git runs with ``GIT_OPTIONAL_LOCKS=0`` and no
+    Workbench lease is taken.
+    """
+    if workspace.get("mode") != "worktree" or not workspace.get("owned"):
+        return {}
+    observed = {"recorded_" + key: workspace[key] for key in ("path_exists", "dirty") if key in workspace}
+    observed.update(path_exists=Path(workspace["path"]).is_dir(), dirty=None)
+    root = Path(workspace.get("root") or workspace["path"])
+    if not root.is_dir():
+        observed["observation_failure"] = "checkout_missing"
+        return observed
+    # Workbench created the tree as a real directory under a real parent;
+    # remove_clean refuses links here too.
+    if root.is_symlink() or root.parent.is_symlink():
+        observed["observation_failure"] = "ownership_path_mismatch"
+        return observed
+    try:
+        # Outside its checkout, Git would report an enclosing repository instead.
+        if Path(_git(root, "rev-parse", "--show-toplevel")).resolve() != root.resolve():
+            observed["observation_failure"] = "not_checkout_root"
+            return observed
+        if not _shares_source_git(root, workspace["source_root"]):
+            observed["observation_failure"] = "git_ownership_mismatch"
+            return observed
+        observed["dirty"] = bool(_git(root, "status", "--porcelain", "--untracked-files=normal"))
+    except GitWorkspaceError as exc:
+        observed["observation_failure"] = "git_helper_" + exc.reason
+    return observed
+
+
+def workspace_view(state, *, observe=False):
     rows = []
     for task in state["tasks"]:
         for attempt in task.get("attempts", []):
             workspace = attempt.get("workspace")
             if workspace:
-                rows.append({"task_id": task["id"], "attempt_id": attempt["id"],
-                             "status": attempt.get("status"), **workspace})
-    return {"run_id": state["id"], "workspaces": rows,
+                row = {"task_id": task["id"], "attempt_id": attempt["id"],
+                       "status": attempt.get("status"), **workspace}
+                if observe:
+                    row.update(observe_workspace(workspace))
+                rows.append(row)
+    view = {"run_id": state["id"], "workspaces": rows,
             "policy": "Worktrees are retained. No automatic merge, cleanup or effect replay."}
+    if observe:
+        from .store import now
+        view["observed_at"] = now()
+        view["observation"] = ("path_exists and dirty were measured at observed_at; recorded_path_exists and "
+                               "recorded_dirty are the values recorded at preparation and attempt end.")
+    return view
+
+
+def _on_remote_ref(root, commit):
+    """True when a local remote-tracking ref contains ``commit``.
+
+    Removal cannot orphan such a commit: the ref keeps it reachable. This reads
+    refs/remotes as of the last fetch and contacts no remote. It is the only
+    basis on which any automatic cleanup may remove a tree (clean AND HEAD on a
+    remote ref); an unchanged tree at an unpushed base is removed only on request.
+    """
+    return bool(_git(root, "for-each-ref", "--count=1", "--format=%(refname)",
+                     "--contains", commit, "refs/remotes/"))
 
 
 def remove_clean(store, run_id, task_id, attempt_id):
@@ -613,18 +690,21 @@ def remove_clean(store, run_id, task_id, attempt_id):
                 raise ValueError("Workspace is not its recorded Git checkout root")
             # A state path alone does not prove this checkout still belongs to
             # the source repository. Verify Git's common directory as well.
-            source = Path(workspace["source_root"]).resolve()
-            common = Path(_git(root, "rev-parse", "--git-common-dir"))
-            source_common = Path(_git(source, "rev-parse", "--git-common-dir"))
-            common = common if common.is_absolute() else root / common
-            source_common = source_common if source_common.is_absolute() else source / source_common
-            if common.resolve() != source_common.resolve():
+            if not _shares_source_git(root, workspace["source_root"]):
                 raise ValueError("Workspace Git ownership does not match its source repository")
-            # Detached commits could become unreachable after removal.
             # Explicit modes: status.showUntrackedFiles=no must not hide files.
-            if (_git(root, "status", "--porcelain", "--untracked-files=normal")
-                    or _git(root, "rev-parse", "HEAD") != workspace["base_commit"]):
+            if _git(root, "status", "--porcelain", "--untracked-files=normal"):
                 raise ValueError("Workspace has changes or new commits; preserve or integrate them first")
+            # Detached commits could become unreachable after removal, unless a
+            # remote-tracking ref already contains them (pushed, as of the last fetch).
+            head = _git(root, "rev-parse", "HEAD")
+            if head == workspace["base_commit"]:
+                basis = "unchanged_base"
+            elif _on_remote_ref(root, head):
+                basis = "head_on_remote_ref"
+            else:
+                raise ValueError("Workspace has changes or new commits that no remote-tracking ref contains; "
+                                 "push, preserve or integrate them first")
             # Git removes ignored files with the tree without asking. Build
             # outputs, generated keys or local artifacts could live there.
             ignored = sum(line.startswith("!!") for line in
@@ -636,7 +716,7 @@ def remove_clean(store, run_id, task_id, attempt_id):
                 from .store import add_event, now
                 target = next(t for t in current["tasks"] if t["id"] == task_id)
                 entry = next(a for a in target["attempts"] if a["id"] == attempt_id)
-                entry["workspace"].update(retained=False, removed_at=now())
-                add_event(current, "workspace_removed", task_id=task_id, attempt_id=attempt_id)
+                entry["workspace"].update(retained=False, removed_at=now(), removed_head=head, removal_basis=basis)
+                add_event(current, "workspace_removed", task_id=task_id, attempt_id=attempt_id, removal_basis=basis)
             store.update(run_id, removed)
         return store.read(run_id)
