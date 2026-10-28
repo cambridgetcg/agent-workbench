@@ -1,4 +1,4 @@
-# Implementation contract: 0.5.1
+# Implementation contract: 0.6.0
 
 Python package: `agent_workbench/`. Public CLI: `agent-workbench`.
 
