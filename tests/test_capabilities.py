@@ -387,7 +387,7 @@ class CapabilityTests(unittest.TestCase):
         linked.symlink_to(source, target_is_directory=True)
         self.claude_workbench_row(linked)
         row = self.claude_content()
-        self.assertEqual((row["content"], row["content_failure"]), ("unknown", "cache_unavailable"))
+        self.assertEqual((row["content"], row["content_failure"]), ("unknown", "cache_refused"))
 
     def test_other_plugins_are_not_content_compared(self):
         cache = self.home / ".claude/plugins/cache/local/other/0.1.0"

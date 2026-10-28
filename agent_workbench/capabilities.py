@@ -464,7 +464,7 @@ def _plugin_inventory(claude_root: Path, project: Path, home: Path) -> dict:
     return {"registry_status": status, "marketplace_registry_status": market_status, "entries": rows,
             "entries_capped": len(rows) >= _MAX_ROWS,
             "comparison": ("Versions are manifest metadata; matching versions do not prove identical cached bytes. "
-                           "content compares SHA-256 digests of agent-workbench's served files (agent_workbench/*.py, "
+                           "content compares SHA-256 digests of agent-workbench's served files (agent_workbench/**/*.py, "
                            "scripts/, skills/ and the plugin manifests) in cache and source, reporting file counts only."),
             "limitations": ["No plugin commands, hooks, MCP definitions or source code are executed or displayed.",
                             "Source comparison covers registered local directory marketplaces only.",
@@ -486,7 +486,9 @@ def _content(source: Path | None, cache: Path | None) -> dict:
     """
     counts, digests = {"source": None, "cache": None}, {}
     for label, root in (("source", source), ("cache", cache)):
-        if root is None or os.path.islink(root) or not root.is_dir():
+        if root is not None and os.path.islink(root):
+            return _unknown_content(label + "_refused", counts)
+        if root is None or not root.is_dir():
             return _unknown_content(label + "_unavailable", counts)
         try:
             digests[label], counts[label], _ = payload_digest(root, _WORKBENCH_CONTENT)
