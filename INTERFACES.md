@@ -239,7 +239,10 @@ read-only allowlisted metadata: versions, auth freshness, selected config values
 with provenance, actual-vs-requested effort, active Astra local proxies. Default
 does not make inference or network calls. Optional probe only configured loopback
 health endpoints, no model calls. Distinguish inferred, configured and observed.
-`format_report(report) -> str`. No token/account-ID/email output.
+`mcp_servers` holds `mcp_inventory` results for `codex`, `claude` (which also
+covers the Astra wrappers), `hermes` and `hermes-astra-ultra`.
+`format_report(report) -> str` prints one MCP line per harness. No
+token/account-ID/email output.
 
 ## Launch/configuration evidence (`capabilities.py`)
 
@@ -252,6 +255,28 @@ advertised interfaces from runtime control acknowledgments and unavailable data.
 Hermes version probes may check upstream for updates; the default doctor skips
 that probe and only reports executable presence plus read-only binding metadata.
 Hermes profile/provider configuration is not resolved by this inspection.
+`mcp_servers` is the harness's `mcp_inventory`, computed with the launch
+environment and the project as working directory. Its warnings also join the
+launch warnings.
+
+## MCP inventory (`mcp.py`)
+
+`mcp_inventory(harness, project, *, home=None, env=None, cwd=None) -> dict`
+reads native configuration files without executing anything. It returns
+server names and Codex `enabled` and `enabled_tools` count. Commands, arguments,
+environment, URLs, headers and tokens are never returned. Sources: Claude
+`.claude.json` (in `CLAUDE_CONFIG_DIR` or home) user scope, the project entry
+keyed by the containing Git root or project, and `.mcp.json` from the root
+down to the project. Codex reads `config.toml` in `CODEX_HOME` and the
+project. Hermes locates the selected profile's `config.yaml`: an explicit
+`HERMES_HOME` profile, else the sticky `active_profile`, else the home. For
+`hermes-astra-ultra` it uses `profiles/astra-ultra` within the `HERMES_HOME`
+installation, which is only a candidate because the wrapper is not run. The
+standard library has no YAML parser, so an existing file is `not_inspected`.
+`status` is `unverified` (configured, not observed), `not_configured` or
+`incomplete` (a source or entry could not be inspected, or the wrapper's
+profile was absent; see `warnings`). Plugins, managed policy, connectors, CLI
+flags and wrappers can change the native set.
 
 ## Subscription bridge (`codex_token.py`)
 

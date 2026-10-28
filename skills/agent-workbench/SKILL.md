@@ -11,6 +11,11 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   settings provenance, instruction-file presence and plugin version drift, or
   `explain --harness HARNESS` for executable/version/help evidence. These are not
   full native effective configuration or proof that instructions were loaded.
+  `doctor` and `explain --harness` also name the MCP servers (for example
+  AgentTool Collab) a harness child would inherit, without commands or
+  environment. `incomplete` means some configuration could not be read (for
+  example Hermes `config.yaml`, which is located but not parsed): check the
+  warnings rather than assuming there are none.
   `--probe` checks only existing loopback gateways; it does not call a model.
   Never read raw auth files or request logs merely to elaborate a doctor report.
   Each attempt records launch evidence; inspect it with `launch RUN TASK` when

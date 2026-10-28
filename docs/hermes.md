@@ -114,6 +114,16 @@ whether it names the installation root or an already-selected profile. A
 Workbench binding file; it does not prove native provider authentication is
 missing or broken. Verify authentication through the intended native workflow.
 
+`doctor`, `explain --harness` and launch records locate the profile
+`config.yaml` that a Hermes child's MCP servers come from. `hermes` uses the
+profile named by `HERMES_HOME`, else the sticky `active_profile`, else the home.
+`hermes-astra-ultra` uses `profiles/astra-ultra` in that installation. The
+standard library has no YAML parser, so an existing file is reported as
+`not_inspected` and the inventory as `incomplete`; check the profile with
+Hermes itself. `HERMES_SAFE_MODE` disables all MCP servers natively. A custom
+wrapper that sets its own `HERMES_HOME` is not run, so an absent profile there
+is reported as `incomplete`, not as having no servers.
+
 Success requires process exit zero and exactly one valid native terminal result
 with exit code zero, text and a session identifier. Recoverable individual tool
 errors do not prematurely end a task. When Hermes appends its file-mutation

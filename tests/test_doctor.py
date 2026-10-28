@@ -366,6 +366,33 @@ class DoctorTests(unittest.TestCase):
         external = self.diagnose()["versions"]["claude"]
         self.assertEqual(external["selected_executable"], "/synthetic/bin/claude")
 
+    def test_mcp_inventory_is_one_names_only_line_per_harness(self):
+        self.write(".claude.json", {"mcpServers": {"agentlayer": {"command": "private-mcp-command", "args": ["private-argument"]}},
+                                    "oauthAccount": {"emailAddress": "private-person@example.invalid"}})
+        self.write(".codex/config.toml", '[mcp_servers.docs]\nurl = "https://private.example/mcp"\nenabled = false\n'
+                                         '[mcp_servers.agentlayer]\ncommand = "private-mcp-command"\n')
+        self.write(".hermes/config.yaml", "{mcp_servers: {telescope: {command: private-mcp-command, enabled: true}}}\n")
+        self.write("relocated/profiles/astra-ultra/config.yaml", "mcp_servers:\n  agenttool:\n    headers: {Authorization: private-token}\n")
+        report = self.diagnose()
+        self.assertEqual(list(report["mcp_servers"]), ["codex", "claude", "hermes", "hermes-astra-ultra"])
+        text = doctor.format_report(report)
+        self.assertIn("MCP servers for codex (configured names only): docs (disabled), agentlayer [unverified]", text)
+        self.assertIn("MCP servers for claude (configured names only): agentlayer [unverified]", text)
+        self.assertIn("MCP servers for hermes (configured names only): none [incomplete]; MCP servers in ~/.hermes/config.yaml "
+                      "could not be inspected (not_inspected)", text)
+        self.assertIn("MCP servers for hermes-astra-ultra (configured names only): none [incomplete]; No Hermes configuration at "
+                      "~/.hermes/profiles/astra-ultra/config.yaml", text)
+        self.env["HERMES_HOME"] = str(self.home / "relocated")
+        report = self.diagnose()
+        text = doctor.format_report(report)
+        self.assertIn("MCP servers for hermes-astra-ultra (configured names only): none [incomplete]; MCP servers in "
+                      "~/relocated/profiles/astra-ultra/config.yaml could not be inspected (not_inspected)", text)
+        rendered = json.dumps(report) + text
+        for secret in ("private-mcp-command", "private-argument", "private.example", "private-token",
+                       "private-person@example.invalid", str(self.home)):
+            self.assertNotIn(secret, rendered)
+        self.assertFalse(any("hermes" in argv[0] for argv, _ in self.calls))
+
     def test_listener_metadata_is_observed_without_process_environment(self):
         self.session()
         def fake(argv, **kwargs):

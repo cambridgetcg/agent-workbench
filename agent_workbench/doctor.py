@@ -19,6 +19,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .mcp import _hermes_home, mcp_inventory
+
 
 _LIMIT = 2 * 1024 * 1024
 _EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"}
@@ -379,18 +381,7 @@ def _hermes(home, env):
         executables[name] = {"status": "present", "selected_executable": selected}
     # HERMES_HOME can be either an installation root or an already-selected
     # named profile. Inspect Astra Ultra only within that same installation.
-    configured_home = env.get("HERMES_HOME")
-    if not isinstance(configured_home, str) or not configured_home.strip():
-        hermes_home = home / ".hermes"
-    elif configured_home == "~":
-        hermes_home = home
-    elif configured_home.startswith("~/"):
-        hermes_home = home / configured_home[2:]
-    else:
-        hermes_home = Path(configured_home)
-        if not hermes_home.is_absolute():
-            hermes_home = Path.cwd() / hermes_home
-    root = hermes_home.parent.parent if hermes_home.parent.name == "profiles" else hermes_home
+    _, root = _hermes_home(env, home)
     profile = root / "profiles/astra-ultra"
     binding = profile / "workbench-subscription.json"
     auth = {"status": "not_configured", "refresh_performed": False}
@@ -425,6 +416,9 @@ def diagnose(*, project: Path | None = None, home: Path | None = None,
         "claude": _claude(home, project, environment),
         "astra": _astra(home, environment, token, now, probe),
         "hermes": _hermes(home, environment),
+        # Astra wrappers read Claude's configuration, so Claude's row covers them.
+        "mcp_servers": {harness: mcp_inventory(harness, project, home=home, env=environment)
+                        for harness in ("codex", "claude", "hermes", "hermes-astra-ultra")},
     }
 
 
@@ -486,4 +480,12 @@ def format_report(report) -> str:
         lines.append(f"    Observed listener: {observed['listener']['status']}; health: {observed['health']['status']}" +
                      (f" (HTTP {observed['health']['http_status']})" if "http_status" in observed["health"] else ""))
         lines.append("    Ultracode activation and actual backend reasoning effort: not observed.")
+    for harness, inventory in report.get("mcp_servers", {}).items():
+        names = dict.fromkeys(server["name"] + (" (disabled)" if server.get("enabled") is False else "")
+                              for row in inventory.get("sources", []) for server in row.get("servers", []))
+        line = f"MCP servers for {harness} (configured names only): {', '.join(names) or 'none'} [{inventory.get('status')}]"
+        warnings = inventory.get("warnings", [])
+        if warnings:
+            line += f"; {warnings[0]}" + (f" (+{len(warnings) - 1} more in JSON)" if len(warnings) > 1 else "")
+        lines.append(line)
     return "\n".join(lines)

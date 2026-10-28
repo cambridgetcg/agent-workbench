@@ -138,6 +138,25 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(profile["configuration"]["hermes"]["status"], "not_inspected")
         self.assertNotIn("PRIVATE_VERSION", json.dumps(profile))
 
+    def test_launch_records_the_selected_harness_mcp_names_only(self):
+        for name in ("claude", "codex", "hermes"):
+            self.executable(name=name)
+        self.write(".claude.json", {"mcpServers": {"claude-server": {"command": "private-mcp-command", "env": {"K": "private-env"}}}})
+        self.write(".codex/config.toml", '[mcp_servers.codex-server]\nurl = "https://private.example/mcp"\nenabled_tools = ["a"]\n')
+        self.write(".hermes/config.yaml", "mcp_servers:\n  hermes-server:\n    args: [private-argument]\n    trust: untrusted\n")
+        claude = self.inspect()["mcp_servers"]
+        self.assertEqual(claude["sources"][0]["servers"], [{"name": "claude-server"}])
+        codex = self.inspect({"harness": "codex"})["mcp_servers"]
+        self.assertEqual(codex["sources"][0]["servers"], [{"name": "codex-server", "enabled_tools_count": 1}])
+        with patch.object(capabilities, "explain_configuration", side_effect=AssertionError("No Claude or Codex reads")):
+            hermes = self.inspect({"harness": "hermes"})
+        self.assertEqual(hermes["mcp_servers"]["status"], "incomplete")
+        self.assertTrue(any("could not be inspected (not_inspected)" in warning for warning in hermes["warnings"]))
+        self.assertNotIn("claude-server", json.dumps(hermes))
+        rendered = json.dumps([claude, codex, hermes])
+        for secret in ("private-mcp-command", "private-env", "private.example", "private-argument"):
+            self.assertNotIn(secret, rendered)
+
     def test_launch_inspection_can_skip_hermes_update_checking_version(self):
         self.executable(name="hermes")
         self.executable(name="codex")

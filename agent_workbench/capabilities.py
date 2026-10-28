@@ -3,8 +3,9 @@
 Help is evidence that a CLI advertises an interface, never proof that a provider,
 account, or running process supports its protocol. Authentication files, session
 transcripts, instruction contents, hook commands and permission patterns are not
-read or returned here. A launch profile's absolute paths are private run metadata;
-the corresponding display fields are suitable for diagnostic output.
+read or returned here. MCP server definitions are reduced to names and selected
+flags. A launch profile's absolute paths are private run metadata; the
+corresponding display fields are suitable for diagnostic output.
 """
 from __future__ import annotations
 
@@ -42,26 +43,34 @@ _FLAGS = {"--output-format", "--input-format", "--resume", "--continue", "--work
           "--format", "--query-file", "--reasoning", "--max-turns", "--skills", "--run-budget"}
 
 
-def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
+def _read_bytes(path: Path, limit: int = _LIMIT) -> tuple[bytes | None, str]:
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 return None, "not_regular"
             with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                raw = stream.read(_LIMIT + 1)
+                raw = stream.read(limit + 1)
         finally:
             os.close(descriptor)
-        if len(raw) > _LIMIT:
-            return None, "too_large"
-        value = tomllib.loads(raw.decode("utf-8")) if toml else json.loads(raw)
-        return (value, "read") if isinstance(value, dict) else (None, "malformed")
+        return (None, "too_large") if len(raw) > limit else (raw, "read")
     except FileNotFoundError:
         return None, "absent"
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError):
         return None, "malformed"
     except OSError:
         return None, "unreadable"
+
+
+def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
+    raw, status = _read_bytes(path)
+    if raw is None:
+        return None, status
+    try:
+        value = tomllib.loads(raw.decode("utf-8")) if toml else json.loads(raw)
+    except (ValueError, TypeError, UnicodeError):
+        return None, "malformed"
+    return (value, "read") if isinstance(value, dict) else (None, "malformed")
 
 
 def _name(value: object) -> str:
@@ -163,7 +172,8 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
 
     No command task or Astra wrapper is invoked during inspection. Known native
     CLIs receive only --version and --help (Codex exec / Hermes chat help too). The returned
-    ``executable`` is the absolute selected entry point for a later launch.
+    ``executable`` is the absolute selected entry point for a later launch;
+    ``mcp_servers`` lists the MCP server names its native configuration declares.
     Wrappers still resolve their own children; the nested ``native`` record
     describes the current PATH candidate, not a guaranteed wrapper launch.
     Hermes's ``--version`` also checks upstream for updates, so launches pass
@@ -292,9 +302,13 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
     if hermes:
         result["configuration"] = {"scope": "not_inspected", "hermes": {
             "status": "not_inspected",
-            "reason": "Profile and provider configuration are not evaluated; this Hermes launch probe does not read Codex or Claude configuration."}}
+            "reason": "Profile and provider configuration are not evaluated (mcp_servers only locates the profile's config.yaml); this Hermes launch probe does not read Codex or Claude configuration."}}
     else:
         result["configuration"] = explain_configuration(project, home=home, env=env)
+    from .mcp import mcp_inventory
+    # The child's cwd is the project, so a relative HERMES_HOME resolves there.
+    result["mcp_servers"] = mcp_inventory(harness, project, home=home, env=env, cwd=project)
+    warnings.extend(result["mcp_servers"]["warnings"])
     if not hermes and harness != "codex" and caps["native_agents_md"]["status"] == "unavailable":
         if any(row["name"] == "AGENTS.md" and row["status"] == "present"
                for row in result["configuration"]["instructions"]["files"]):
