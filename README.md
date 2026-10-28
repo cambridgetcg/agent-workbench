@@ -163,9 +163,9 @@ every `CLAUDE_CODE_MESSAGING_` variable, and Codex's `CODEX_CI`,
 `AGENTOOL_COLLAB_SESSION_FILE`, `AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY` and
 `AGENTOOL_COLLAB_CLAUDE_PID` (a child holding them would fence the host's Collab
 session; `AGENTOOL_COLLAB_DB` stays). Other environment variables, including API
-keys, are inherited; a task's launch record lists the removed names. An older
-Hermes without `chat --run-budget` refuses a task that sets `run_budget_seconds`
-at launch, with that reason. Starting a run
+keys, are inherited; a task's launch record lists the removed names. When the
+installed Hermes's `chat --help` lacks `--run-budget`, Workbench refuses a task
+that sets `run_budget_seconds` at launch, with that reason. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise
 the defaults remain in force. Process success alone does not establish that an
@@ -482,7 +482,7 @@ doctor's AgentTool section, and the Collab peer pattern in
 [examples/collab-peer.json](examples/collab-peer.json): a separate native agent
 completes one Collab task into pending review, a command task checks its file
 effect, and the parent reviews from its own session. Lobby commands are for a
-person at a real terminal; Workbench never runs them.
+person at a real terminal; Workbench refuses the lobby CLI as a command task.
 
 ## Roadmaps
 

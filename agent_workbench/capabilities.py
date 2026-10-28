@@ -58,6 +58,8 @@ def _read_bytes(path: Path) -> tuple[bytes | None, str]:
         return None, "absent"
     except OSError:
         return None, "unreadable"
+    except ValueError:  # e.g. an embedded NUL in a configured path, as before the split
+        return None, "malformed"
 
 
 def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:

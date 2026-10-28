@@ -39,21 +39,29 @@ child never inherits its parent's seat.
 | `api.agenttool.dev/v1/wake` | Personal wake needs a project credential |
 
 The check runs when a run is saved or imported, and again just before launch, so
-a run saved by an older version fails as `launch_error` with no process. It looks
-inside `sh -c` scripts, wrappers such as `env`, `script` and `bun`, and the value
-of `NAME=value` and `--option=value` words. Plain `grep`, `git grep` and `git log`
-keep their words as data (unless given a pager option such as `-O`). Everything
-else fails closed: a verifier that must mention a refused name can use grep or a
-pattern such as `agenttool-lobb[y]`.
+a run saved by an older version fails as `launch_error` with no process, before
+any workspace is prepared. It looks inside `sh -c` scripts, wrappers such as
+`env`, `script`, `npx` and `bun`, package specs such as `name@version` and
+`@agenttool/<name>`, the value of `NAME=value` and `--option=value` words, and
+git grep's pager value. A plain `grep`, `git grep` or `git log` in the first
+position keeps its words as data, unless it is given a pager option (`-O`,
+`--open-files-in-pager`) or `--ext-diff`; `NAME=value` words in front of a search
+are still checked. Everything else fails closed: a verifier that must mention a
+refused name can use grep or a pattern such as `agenttool-lobb[y]`. The lobby's
+read-only MCP view, `agenttool-lobby-mcp`, is not refused.
 
 This is a tripwire at Workbench's own launch surface, **not a sandbox**. An agent
 task's own shell stays governed by its harness's permissions.
 
 ## Session-file paths stay out of run state
 
-Collab writes each session's bearer to `<journal dir>/collab-sessions/<id>.json`.
-A workflow name, goal, prompt or command argument that names such a file is
-refused, and so are `note` and `steer` text. The error never repeats the path.
+Collab writes each session's bearer to `<journal dir>/collab-sessions/<id>.json`;
+a host may also name one with `AGENTOOL_COLLAB_SESSION_FILE=<path>`,
+`--session-file <path>` or a `"session_file": "<path>"` receipt field. A workflow
+name, goal, prompt or command argument that names such a file is refused, and so
+are `note`, `steer` and live `send` text. The error never repeats the path. At
+launch the composed prompt (which carries the goal when it differs) and the
+command's arguments are checked again; the saved name is not sent anywhere.
 An agent's own summary that names one shows `[Collab session file withheld]` in
 status, timeline, plan, launch output and the next agent's prompt. Handoff export
 refuses such a run and continuity notes withhold such a note. A saved prompt that
@@ -67,27 +75,39 @@ agent-workbench doctor --project ~
 agent-workbench doctor --project ~ --json   # the "agenttool" key
 ```
 
-The section reads configuration files only: `~/.codex/config.toml` and the
-project's `.codex/config.toml`; the `mcpServers` objects of `~/.claude.json` (user
-scope and this project's local scope) and the project's `.mcp.json`; and the
-`mcp_servers` block of Hermes's `config.yaml`. Servers are recognised by endpoint
-or command, not by name, and other servers are only counted. Use `--project` for
-the folder whose Claude servers you want to see.
+The section reads configuration files only: `~/.codex/config.toml` (or
+`$CODEX_HOME`) and the project's `.codex/config.toml`; the `mcpServers` objects of
+`~/.claude.json` (or `$CLAUDE_CONFIG_DIR`; user scope and this project's local
+scope) and the project's `.mcp.json`; the `mcp_servers` block of Hermes's
+`config.yaml` (or `$HERMES_HOME`) and of the `astra-ultra` profile; and the
+`package.json` beside a configured Collab entry. It also checks, without opening
+them, whether `~/.hermes/active_profile`, Hermes's managed scope
+(`$HERMES_MANAGED_DIR` or `/etc/hermes`) and a Collab host command exist, and which
+AgentTool commands are on PATH. Servers are recognised by endpoint or command, not
+by name, and other servers are only counted. Use `--project` for the folder whose
+Claude servers you want to see.
 
-Each harness line says `configured`, `partial` (an allowlist missing expected
-tools), `disabled`, `not configured`, or `unknown` (a file was unreadable or not
-parsed, so absence cannot be claimed). The expected public tools are
+In the JSON, each surface's `summary` is `configured`, `partial` (a tool filter
+hides expected tools), `disabled`, `not_configured`, or `unknown` (a file was
+unreadable or not parsed, or Hermes's managed scope exists, so absence cannot be
+claimed). The text line shows the same as tool counts, for example
+`public canon 2/2 tools (exact)` or `public canon 1/2 tools (subset)`, and as
+`not configured` or `unknown`. Tool filters are read the way each harness applies
+them: Codex removes `disabled_tools` even without `enabled_tools`; Hermes uses a
+non-empty `include` and ignores `exclude`, treats a single string as one tool and
+an empty list as no filter. The expected public tools are
 `canon.by_type`, `canon.list_types`, `canon.lookup`, `canon.summary` and
 `wake.platform` at `/v1/mcp`, and `search` and `fetch` at `/v1/mcp/canon`.
 A Collab line shows the version in the `package.json` beside its configured entry,
 which describes the files, not a running process. A server configured with
-headers or a bearer, or a per-agent endpoint, is flagged as outside the
-public-tools boundary.
+headers, a header helper program, a bearer, credentials in the URL, or a
+per-agent endpoint is flagged as outside the public-tools boundary.
 
 ### Copy-ready fixes (your decision; Workbench applies none of them)
 
-For a missing public server, doctor prints the text to add it. Start a new
-session of that harness afterwards; running sessions keep their old tool list.
+For a missing public server, doctor prints the command or snippet to add it for
+Codex and Claude Code, and points Hermes to the blocks below. Start a new session
+of that harness afterwards; running sessions keep their old tool list.
 
 Codex, in `~/.codex/config.toml` (copy `default_tools_approval_mode` too if your
 `agenttool` entry sets it):
@@ -108,7 +128,30 @@ claude mcp add --transport http --scope user agenttool_canon https://api.agentto
 ```
 
 <a id="hermes"></a>Hermes, in `config.yaml` under `mcp_servers:` (`hermes mcp add`
-is interactive and connects to the server first):
+is interactive and connects to the server first). For the public agenttool server:
+
+```yaml
+  agenttool:
+    url: https://api.agenttool.dev/v1/mcp
+    enabled: true
+    connect_timeout: 30
+    timeout: 60
+    tools:
+      include:
+        - canon.lookup
+        - canon.by_type
+        - canon.list_types
+        - canon.summary
+        - wake.platform
+      resources: false
+      prompts: false
+    sampling:
+      enabled: false
+    elicitation:
+      enabled: false
+```
+
+For the public canon server:
 
 ```yaml
   agenttool_canon:
@@ -176,8 +219,9 @@ real checks. Things to know:
 
 Carry work between devices by repository and exact commit through Git. When the
 lobby is the right road, hand the exact lobby command to the person to type in a
-real terminal. Workbench never runs a lobby command and never makes, uses or
-suggests a seat lease: other loops stay out of table talk.
+real terminal. Workbench refuses the lobby CLI as a command task (the read-only
+MCP view is the one exception) and never makes, uses or suggests a seat lease:
+other loops stay out of table talk.
 
 ## Not here, and why
 

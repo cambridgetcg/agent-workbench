@@ -101,7 +101,7 @@ class DoctorTests(unittest.TestCase):
         self.assertIn("AgentTool tools by harness", text)
         for harness in ("codex", "claude", "hermes", "hermes-astra-ultra"):
             self.assertIn(f"  {harness}: ", text)
-        self.assertIn("public agenttool all tools (no allowlist)", text)
+        self.assertIn("public agenttool all tools (no tool filter)", text)
         self.assertTrue(all(argv[1] == "--version" for argv, _ in self.calls))
 
     def test_codex_partial_config_precedence_and_provenance(self):

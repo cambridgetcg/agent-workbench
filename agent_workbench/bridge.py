@@ -125,6 +125,9 @@ def request_native(store, run_id, task_id, action, text=None, request_id=None):
         raise ValueError("Native control must be input or interrupt")
     if action == "input" and (not isinstance(text, str) or not text.strip() or len(text) > 16000 or "\0" in text):
         raise ValueError("Native input must contain 1–16000 characters")
+    from .agenttool import SESSION_FILE_REFUSAL, names_collab_session_file
+    if action == "input" and names_collab_session_file(text):
+        raise ValueError("Native input " + SESSION_FILE_REFUSAL)
     ident = uuid.uuid4().hex if request_id is None else request_id
     from .native import _pointer
     if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", ident) or _pointer(ident) is None:

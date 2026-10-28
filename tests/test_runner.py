@@ -22,6 +22,8 @@ if "--version" in sys.argv:
     print("vgit.59004a6 (2026.9.24)" if kind.startswith("hermes") else "2.1.282")
     sys.exit(0)
 if "--help" in sys.argv:
+    if os.environ.get("WORKBENCH_FAKE_NO_CHAT_HELP") and "chat" in sys.argv:
+        sys.exit(1)
     hermes_help = "--query-file --format stream-json --reasoning --model --resume --max-turns --skills"
     if not os.environ.get("WORKBENCH_FAKE_OLDER_HERMES"):
         hermes_help += " --run-budget"
@@ -411,6 +413,34 @@ class RunnerTests(unittest.TestCase):
         stdin = next(self.store.directory(run_id).rglob("stdin.txt"))
         self.assertEqual(stdin.read_bytes(), b"")
         self.assertNotIn(locator, json.dumps(state["tasks"][0]["result"]))
+
+    def test_summaries_saved_before_withholding_are_withheld_in_the_next_prompt(self):
+        run_id = self.create([self.agent("peer", "codex"), self.agent("next", "codex", depends_on=["peer"])])
+        def finished_on_an_older_version(state):
+            peer = state["tasks"][0]
+            peer.update(status="succeeded", result={"summary": "resumed /var/empty/old/collab-sessions/s1.json fine"})
+        self.store.update(run_id, finished_on_an_older_version)
+        state = run_workflow(self.store, run_id)
+        self.assertEqual(state["tasks"][1]["status"], "succeeded")
+        prompt = self.calls()[0]["prompt"]
+        self.assertIn("[Collab session file withheld]", prompt)
+        self.assertNotIn("/var/empty/old/collab-sessions", prompt)
+
+    def test_refusal_comes_before_workspace_preparation_and_cli_probing(self):
+        run_id = self.create([{"id": "notify", "harness": "command", "argv": ["true"]}])
+        self.store.update(run_id, lambda state: state["tasks"][0].update(argv=["agenttool-lobby", "room", "list"]))
+        with patch("agent_workbench.workspaces.prepare", side_effect=AssertionError("prepared")), \
+                patch("agent_workbench.capabilities.inspect_launch", side_effect=AssertionError("probed")):
+            task = run_workflow(self.store, run_id)["tasks"][0]
+        self.assertEqual(task["result"]["failure_kind"], "launch_error")
+        self.assertTrue(task["result"]["summary"].startswith("Task notify runs the AgentTool lobby CLI"))
+
+    def test_run_budget_is_passed_when_chat_help_could_not_be_read(self):
+        with patch.dict(os.environ, {"WORKBENCH_FAKE_OLDER_HERMES": "1", "WORKBENCH_FAKE_NO_CHAT_HELP": "1"}):
+            state = run_workflow(self.store, self.create([self.agent("budget", "hermes", run_budget_seconds=60,
+                                                                     timeout_seconds=120)]))
+        self.assertEqual(state["tasks"][0]["status"], "succeeded")
+        self.assertEqual(self.calls()[0]["argv"][-2:], ["--run-budget", "60"])
 
     def test_predecessor_summary_withholds_collab_session_file_path(self):
         run_id = self.create([self.agent("peer", "hermes", prompt="SESSION_FILE"),

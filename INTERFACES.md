@@ -20,8 +20,9 @@ Python package: `agent_workbench/`. Public CLI: `agent-workbench`.
 - `validate_manifest(manifest: dict) -> dict` returns normalized copy; validates
   task IDs, dependencies/cycles, harness settings, and command argv. Command argv
   that `agenttool.refused_command` names, and any name, goal, prompt or argv that
-  names a Collab session file, are refused here and again at launch
-  (`agenttool.launch_refusal`: failed/launch_error, no process).
+  names a Collab session file, are refused here. At launch,
+  `agenttool.launch_refusal` checks the argv and the composed prompt again
+  (failed/launch_error, no process, before workspace preparation).
 - `now() -> str` UTC ISO timestamp.
 - `add_event(state, kind, **fields)` appends a timestamped event.
 
@@ -352,15 +353,22 @@ Nothing here starts a process, opens a Collab journal or uses the network.
   segment with `--lease`. Segments led by `grep`, `egrep`, `fgrep`, `git grep` or
   `git log` (no git global options, no pager option) are data. Fails closed.
 - `launch_refusal(task, prompt) -> str | None` returns `Task <id> <reason>`.
-- `names_collab_session_file(text) -> bool` matches a concrete
-  `collab-sessions/<id>.json` locator or an `AGENTOOL_COLLAB_SESSION_FILE` assignment
-  whose value looks like a path; `withhold_session_files(text) -> str` replaces them
-  with `[Collab session file withheld]`; `SESSION_FILE_PATTERNS` holds both.
+- `names_collab_session_file(text) -> bool` matches, in linear time, a concrete
+  `collab-sessions/<id>.json` locator, or an `AGENTOOL_COLLAB_SESSION_FILE`,
+  `--session-file` or `session_file` value that looks like a path;
+  `argv_names_collab_session_file(argv)` also sees `--session-file <path>` as two
+  words; `withhold_session_files(text) -> str` replaces them (a quoted path whole)
+  with `[Collab session file withheld]`; `SESSION_FILE_PATTERNS` holds the three
+  detection patterns. `bridge.request_native` refuses such live input.
 - `wiring(*, home, project, env) -> dict` reports configured (not observed)
   AgentTool servers for `codex`, `claude`, `hermes` and `hermes-astra-ultra`,
   classified by endpoint or command; names never values; other servers only
   counted; suggestions for missing public servers are printed, never applied.
-  Hermes `config.yaml` is read with a block-style subset reader of `mcp_servers`.
+  Tool filters follow each harness (Codex `disabled_tools` always removes; Hermes
+  non-empty `include` wins). Hermes `config.yaml` is read with a block-style subset
+  reader of `mcp_servers`; YAML that PyYAML would reject, or that the subset cannot
+  read, is `unparsed`, never absent. A section that cannot be read is `unknown`
+  and never stops doctor.
 - `format_lines(section) -> list[str]` renders that section for `format_report`.
 
 ## Read-only views (`views.py`)

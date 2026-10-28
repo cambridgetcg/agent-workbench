@@ -116,8 +116,11 @@ Hermes delegates share their parent's MCP connection, so each independent
 AgentTool Collab peer needs its own Workbench task; see
 [AgentTool next door](agenttool.md). `doctor` reads `config.yaml`'s `mcp_servers`
 block with a block-style subset reader to show which AgentTool tools Hermes has.
-An older Hermes that lacks `chat --run-budget` refuses `run_budget_seconds` at
-launch, and Workbench also recognises its older file-mutation footer.
+When the installed Hermes's `chat --help` lacks `--run-budget`, Workbench refuses
+a task that sets `run_budget_seconds` at launch, and it also recognises that
+Hermes's older file-mutation footer. Hermes's managed scope (`$HERMES_MANAGED_DIR`
+or `/etc/hermes`) is not read; when it exists, doctor reports Hermes's AgentTool
+surfaces as unknown.
 
 Hermes currently supports the process adapter. Workbench's live `send` and
 acknowledged turn interrupt remain Claude-compatible features. Process-group

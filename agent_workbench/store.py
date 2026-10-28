@@ -13,7 +13,7 @@ import tempfile
 from typing import Callable
 import uuid
 
-from .agenttool import SESSION_FILE_REFUSAL, names_collab_session_file, refused_command
+from .agenttool import SESSION_FILE_REFUSAL, argv_names_collab_session_file, names_collab_session_file, refused_command
 
 
 RUN_ID = re.compile(r"[a-f0-9]{32}\Z")
@@ -126,7 +126,7 @@ def validate_manifest(manifest: dict) -> dict:
             out["argv"] = [_text(a, "command argument", 16_000, empty=i > 0) for i, a in enumerate(argv)]
             if reason := refused_command(out["argv"]):
                 raise ValueError(f"Task {ident} {reason}")
-            if any(names_collab_session_file(argument) for argument in out["argv"]):
+            if argv_names_collab_session_file(out["argv"]):
                 raise ValueError(f"Task {ident} {SESSION_FILE_REFUSAL}")
         else:
             if "argv" in task:

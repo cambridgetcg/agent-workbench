@@ -234,7 +234,7 @@ class WiringTests(unittest.TestCase):
             "primaryApiKey": "sk-ant-claudesentinelsecret000000",
             "projects": {str(self.project): {"mcpServers": {"hf-mcp-server": {"type": "http", "url": "https://huggingface.co/mcp"}}},
                          "/var/empty/other": {"mcpServers": {"agenttool": {"type": "http", "url": "https://api.agenttool.dev/v1/mcp"}}}}}))
-        self.env = {"PATH": "/var/empty/bin"}
+        self.env = {"PATH": "/var/empty/bin", "HERMES_MANAGED_DIR": "/var/empty/no-managed-scope"}
 
     def write(self, relative, text):
         path = self.home / relative
@@ -362,7 +362,7 @@ class WiringTests(unittest.TestCase):
 
         def audit(event, args):
             if active["on"] and event in {"open", "os.listdir", "os.scandir", "subprocess.Popen", "os.posix_spawn",
-                                          "os.exec", "socket.connect"}:
+                                          "os.exec", "socket.connect", "socket.getaddrinfo", "sqlite3.connect"}:
                 if event == "open" and not str(args[0]).startswith(root):
                     return
                 events.append((event, str(args[0]) if args else ""))
@@ -376,7 +376,8 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(report["commands"]["agenttool-lobby"], "present")
         self.assertFalse(marker.exists())
         self.assertFalse(journal.exists())
-        self.assertEqual([e for e in events if e[0] in {"subprocess.Popen", "os.posix_spawn", "os.exec", "socket.connect"}], [])
+        self.assertEqual([e for e in events if e[0] in {"subprocess.Popen", "os.posix_spawn", "os.exec", "socket.connect",
+                                                         "socket.getaddrinfo", "sqlite3.connect"}], [])
         opened = {Path(path).name for event, path in events if event == "open"}
         self.assertLessEqual(opened, {"config.toml", ".claude.json", ".mcp.json", "config.yaml", "package.json"})
         self.assertLessEqual({"config.toml", ".claude.json", "config.yaml", "package.json"}, opened)  # the hook saw the reads
