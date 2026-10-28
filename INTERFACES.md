@@ -299,11 +299,18 @@ cache, and a `content_failure` code when unknown. The digest is
 link at a cache root or inside the scope is refused, never followed, leaving
 content unknown. Other plugins report `not_compared`. `plugins.codex_entries`
 adds one row per `$CODEX_HOME/plugins/cache/*/agent-workbench/<version>`
-directory (CODEX_HOME defaulting to `~/.codex`) for the stamped version the
-running checkout's `.codex-plugin/plugin.json` names, compared with that
-checkout the same way; when absent, content is unknown. The content fields
-carry no path, file name or file content, and Codex's plugin registry is not
-read.
+directory (CODEX_HOME defaulting to `~/.codex`) for the stamped version its
+source's `.codex-plugin/plugin.json` names, compared the same way; when absent,
+content is unknown. Its `source_basis` says which source: the first
+agent-workbench directory-marketplace source read from Claude's registry
+(`claude_directory_marketplace`), else the tree running `explain`
+(`running_checkout`, or `running_plugin_cache` when that tree is itself a
+cache, since the bundled script runs from either harness's cache). A source
+that resolves into any Claude or Codex `plugins/cache` directory, configured or
+default, is a copy and is never compared: content is unknown with
+`source_is_cache`, because two stale copies, or one copy and itself, would read
+as a match. The content fields carry no path, file name or file content, and
+Codex's plugin registry is not read.
 
 ## Plugin evaluation (`evaluation.py`)
 

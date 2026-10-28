@@ -420,12 +420,13 @@ def _instruction_preview(project: Path, home: Path, claude_root: Path, codex_roo
             "AGENTS.md support and CLAUDE.md fallback depend on native version, provider and instruction mode."]}
 
 
-def _plugin_inventory(claude_root: Path, project: Path, home: Path) -> dict:
+def _plugin_inventory(claude_root: Path, project: Path, home: Path, caches: tuple[Path, ...]) -> tuple[dict, list[Path]]:
+    """Claude plugin rows, and agent-workbench's directory-marketplace sources in registry order."""
     registry, status = _read(claude_root / "plugins/installed_plugins.json")
     marketplaces, market_status = _read(claude_root / "plugins/known_marketplaces.json")
     installed = (registry or {}).get("plugins", {})
     installed = installed if isinstance(installed, dict) else {}
-    rows = []
+    rows, workbench_sources = [], []
     for identifier, registrations in installed.items():
         if not isinstance(registrations, list):
             continue
@@ -457,7 +458,9 @@ def _plugin_inventory(claude_root: Path, project: Path, home: Path) -> dict:
                 row["source_cache_consistency"] = "match" if row["source_version"] == row["manifest_version"] else "mismatch"
             if isinstance(identifier, str) and identifier.rsplit("@", 1)[0] == _WORKBENCH:
                 cache = Path(install) if isinstance(install, str) and install and Path(install).is_absolute() else None
-                row.update(_content(source_root if source_status == "read" else None, cache))
+                if source_status == "read":
+                    workbench_sources.append(source_root)
+                row.update(_content(source_root if source_status == "read" else None, cache, caches))
             else:
                 row.update(_unknown_content("not_compared"))
             rows.append(row)
@@ -469,7 +472,8 @@ def _plugin_inventory(claude_root: Path, project: Path, home: Path) -> dict:
             "limitations": ["No plugin commands, hooks, MCP definitions or source code are executed or displayed.",
                             "Source comparison covers registered local directory marketplaces only.",
                             "Content is compared for agent-workbench only; other plugins report content unknown "
-                            "(not_compared). Symbolic links are refused, never followed, leaving content unknown."]}
+                            "(not_compared). Symbolic links are refused, never followed, leaving content unknown. "
+                            "A source inside a plugin cache is not compared (source_is_cache)."]}, workbench_sources
 
 
 def _unknown_content(failure: str, counts: dict | None = None) -> dict:
@@ -477,12 +481,20 @@ def _unknown_content(failure: str, counts: dict | None = None) -> dict:
             "content_files": counts or {"source": None, "cache": None}}
 
 
-def _content(source: Path | None, cache: Path | None) -> dict:
+def _in_cache(path: Path, caches: tuple[Path, ...]) -> bool:
+    """Whether ``path`` resolves to or below one of the plugin cache directories."""
+    real = Path(os.path.realpath(path))
+    return any(real.is_relative_to(os.path.realpath(cache)) for cache in caches)
+
+
+def _content(source: Path | None, cache: Path | None, caches: tuple[Path, ...]) -> dict:
     """Compare Workbench's served files in a cache with its source by digest only.
 
     Returns ``content`` match, differs or unknown and file counts; no path, file
     name or content is returned. A root that is a symbolic link, or any link
     inside the scope, is refused rather than followed, leaving content unknown.
+    A source inside one of ``caches`` is a copy, not a source: comparing two
+    copies, or one with itself, would read as a match however stale both are.
     """
     counts, digests = {"source": None, "cache": None}, {}
     for label, root in (("source", source), ("cache", cache)):
@@ -490,6 +502,8 @@ def _content(source: Path | None, cache: Path | None) -> dict:
             return _unknown_content(label + "_refused", counts)
         if root is None or not root.is_dir():
             return _unknown_content(label + "_unavailable", counts)
+        if label == "source" and _in_cache(root, caches):
+            return _unknown_content("source_is_cache", counts)
         try:
             digests[label], counts[label], _ = payload_digest(root, _WORKBENCH_CONTENT)
         except (OSError, ValueError):
@@ -499,42 +513,50 @@ def _content(source: Path | None, cache: Path | None) -> dict:
     return {"content": "match" if digests["source"] == digests["cache"] else "differs", "content_files": counts}
 
 
-def _codex_plugin_cache(codex_root: Path, source: Path) -> list[dict]:
-    """Rows for Codex's cache of the Workbench version that ``source`` declares.
+def _codex_plugin_cache(codex_root: Path, sources: list[Path], caches: tuple[Path, ...]) -> list[dict]:
+    """Rows for Codex's cache of the Workbench version that the source declares.
 
     Codex caches an installed plugin as plugins/cache/<marketplace>/<name>/<version>,
     keyed by the exact version in the source's .codex-plugin manifest. Only that
     directory is compared; Codex's own plugin registry is not read, and absence
-    leaves content unknown. ``source`` is the checkout running this inspection.
+    leaves content unknown. The source is the first agent-workbench directory
+    marketplace source read from Claude's registry, else the tree running this
+    inspection, which may itself be a plugin cache (the bundled script runs
+    from either harness's cache): then content is unknown (source_is_cache).
     """
+    if sources:
+        source, basis = sources[0], "claude_directory_marketplace"
+    else:
+        source = _SOURCE_ROOT
+        basis = "running_plugin_cache" if _in_cache(source, caches) else "running_checkout"
     manifest, status = _read(source / ".codex-plugin/plugin.json")
     version = _version((manifest or {}).get("version"))
-    base = {"id": _WORKBENCH, "source_basis": "running_checkout", "source_manifest_status": status,
+    base = {"id": _WORKBENCH, "source_basis": basis, "source_manifest_status": status,
             "source_version": version}
     if version is None or (manifest or {}).get("name") != _WORKBENCH:
         return [{**base, "cache_status": "unknown_version", **_unknown_content("source_unavailable")}]
-    caches = []
+    found = []
     try:
         with os.scandir(codex_root / "plugins/cache") as markets:
             for market in markets:
-                if len(caches) >= _CODEX_CACHE_ROWS:
+                if len(found) >= _CODEX_CACHE_ROWS:
                     break
                 if market.is_dir(follow_symlinks=False) and os.path.lexists(Path(market.path) / _WORKBENCH / version):
-                    caches.append((market.name, Path(market.path)))
+                    found.append((market.name, Path(market.path)))
     except FileNotFoundError:
         pass
     except OSError:
         return [{**base, "cache_status": "unreadable", **_unknown_content("cache_unavailable")}]
-    if not caches:
+    if not found:
         return [{**base, "cache_status": "absent", **_unknown_content("cache_unavailable")}]
     rows = []
-    for name, market in sorted(caches):
+    for name, market in sorted(found):
         row = {**base, "marketplace": _name(name), "cache_status": "present"}
         # The version directory is checked by _content; its parent must not be a link either.
         if os.path.islink(market / _WORKBENCH):
             row.update(_unknown_content("cache_refused"))
         else:
-            row.update(_content(source, market / _WORKBENCH / version))
+            row.update(_content(source, market / _WORKBENCH / version, caches))
         rows.append(row)
     return rows
 
@@ -591,10 +613,13 @@ def explain_configuration(project: Path, *, home: Path | None = None, env: dict 
     codex = _configuration([(codex_root / "config.toml", codex_label + "/config.toml"),
                             (project / ".codex/config.toml", "$PROJECT/.codex/config.toml")],
                            ("model", "model_reasoning_effort", "approval_policy", "sandbox_mode", "model_provider"), toml=True)
-    plugins = _plugin_inventory(claude_root, project, home)
-    plugins["codex_entries"] = _codex_plugin_cache(codex_root, _SOURCE_ROOT)
+    # Both harnesses' caches, configured and default: a copy in any of them is never a source.
+    caches = tuple(dict.fromkeys(root / "plugins/cache" for root in (claude_root, codex_root, home / ".claude", home / ".codex")))
+    plugins, workbench_sources = _plugin_inventory(claude_root, project, home, caches)
+    plugins["codex_entries"] = _codex_plugin_cache(codex_root, workbench_sources, caches)
     plugins["limitations"].append("The Codex row compares " + codex_label + "/plugins/cache/*/agent-workbench/<version> "
-                                  "with the checkout running this inspection; Codex's plugin registry is not read.")
+                                  "with agent-workbench's Claude directory-marketplace source when one was read, else with "
+                                  "the tree running this inspection (source_basis); Codex's plugin registry is not read.")
     return {"scope": "partial", "network": "none", "authentication_files_read": False,
             "claude": claude, "codex": codex,
             "instructions": _instruction_preview(project, home, claude_root, codex_root),

@@ -420,6 +420,43 @@ class CapabilityTests(unittest.TestCase):
             row, = self.explain()["plugins"]["codex_entries"]
             self.assertEqual((row["cache_status"], row["content"]), ("unknown_version", "unknown"))
 
+    def test_codex_row_never_takes_a_plugin_cache_as_its_source(self):
+        # The bundled script may run from either harness's cache. Both caches
+        # hold the same stale files; only the checkout has the new skill text.
+        claude_cache = self.home / ".claude/plugins/cache/agent-workbench-local/agent-workbench/0.5.2"
+        codex_cache = self.home / ".codex/plugins/cache/personal/agent-workbench/0.5.2+codex.20261028120000"
+        stale = self.workbench_tree(self.home / "stale")
+        (stale / "skills/agent-workbench/SKILL.md").write_text("Older skill text.\n")
+        self.cached_copy(stale, claude_cache)
+        self.cached_copy(stale, codex_cache)
+        for name, running in (("codex_cache", codex_cache), ("claude_cache", claude_cache)):
+            with self.subTest(running=name), patch.object(capabilities, "_SOURCE_ROOT", running):
+                row, = self.explain()["plugins"]["codex_entries"]
+                self.assertEqual((row["source_basis"], row["content"], row["content_failure"]),
+                                 ("running_plugin_cache", "unknown", "source_is_cache"))
+        # A registered directory marketplace is the source, wherever the CLI runs.
+        source = self.claude_workbench_row(claude_cache)
+        for name, running in (("codex_cache", codex_cache), ("claude_cache", claude_cache), ("checkout", source)):
+            with self.subTest(running=name), patch.object(capabilities, "_SOURCE_ROOT", running):
+                plugins = self.explain()["plugins"]
+                row, = plugins["codex_entries"]
+                self.assertEqual((row["source_basis"], row["content"]), ("claude_directory_marketplace", "differs"))
+                self.assertEqual(plugins["entries"][0]["content"], "differs")
+        shutil.rmtree(codex_cache)
+        self.cached_copy(source, codex_cache)
+        with patch.object(capabilities, "_SOURCE_ROOT", codex_cache):
+            row, = self.explain()["plugins"]["codex_entries"]
+            self.assertEqual((row["source_basis"], row["content"]), ("claude_directory_marketplace", "match"))
+        # A marketplace that itself points into a cache proves nothing either.
+        self.write(".claude/plugins/known_marketplaces.json",
+                   {"agent-workbench-local": {"source": {"source": "directory", "path": str(claude_cache)}}})
+        with patch.object(capabilities, "_SOURCE_ROOT", source):
+            plugins = self.explain()["plugins"]
+            self.assertEqual((plugins["entries"][0]["content"], plugins["entries"][0]["content_failure"]),
+                             ("unknown", "source_is_cache"))
+            row, = plugins["codex_entries"]
+            self.assertEqual((row["source_basis"], row["content_failure"]), ("claude_directory_marketplace", "source_is_cache"))
+
     def test_fifo_and_oversized_settings_do_not_block(self):
         path = self.home / ".claude/settings.json"
         path.parent.mkdir()
