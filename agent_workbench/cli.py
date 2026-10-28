@@ -123,6 +123,25 @@ def print_status(state: dict, as_json=False) -> None:
         print("Imported history is retained separately; local tasks require new execution.")
 
 
+def print_removal(state: dict, task_id: str, attempt_id: str) -> None:
+    """Say plainly when workspace-remove closed a record instead of removing a tree."""
+    task = next(t for t in state["tasks"] if t["id"] == task_id)
+    workspace = next(a for a in task["attempts"] if a["id"] == attempt_id)["workspace"]
+    if workspace.get("removal_basis") != "absent_outside_workbench":
+        return
+    print("Closed the record: this worktree was already gone, so Workbench removed nothing.")
+    if workspace.get("possible_unpushed_loss"):
+        reasons = []
+        if workspace.get("recorded_dirty"):
+            reasons.append("the attempt ended with uncommitted changes")
+        if workspace.get("final_head_on_remote_ref") is False:
+            reasons.append("its last recorded HEAD is on no remote-tracking ref")
+        elif workspace.get("final_head_on_remote_ref") is None:
+            reasons.append("whether its last recorded HEAD is on a remote-tracking ref is unknown")
+        print("Possible unpushed loss: " + "; ".join(reasons) + ". Work that existed only in that tree "
+              "cannot be recovered by Workbench.")
+
+
 def print_timeline(view: dict, as_json=False) -> None:
     if as_json:
         print(json.dumps(view, indent=2))
@@ -187,7 +206,7 @@ def parser() -> argparse.ArgumentParser:
     launch.add_argument("--attempt", help="Attempt ID (default: latest for this task)")
     workspaces = sub.add_parser("workspaces", help="List per-attempt checkout ownership; path_exists and dirty are observed now")
     workspaces.add_argument("run_id")
-    cleanup = sub.add_parser("workspace-remove", help="Explicitly remove a clean Workbench-owned worktree at its base commit or with HEAD on a remote-tracking ref")
+    cleanup = sub.add_parser("workspace-remove", help="Explicitly remove a clean Workbench-owned worktree at its base commit or with HEAD on a remote-tracking ref, or close the record of one already removed and unregistered")
     cleanup.add_argument("run_id")
     cleanup.add_argument("task_id")
     cleanup.add_argument("attempt_id")
@@ -333,7 +352,9 @@ def main(argv=None) -> int:
             print(json.dumps(redacted_view(workspace_view(store.read(args.run_id), observe=True)), indent=2))
         elif args.command == "workspace-remove":
             from .workspaces import remove_clean
-            print_status(remove_clean(store, args.run_id, args.task_id, args.attempt_id))
+            state = remove_clean(store, args.run_id, args.task_id, args.attempt_id)
+            print_status(state)
+            print_removal(state, args.task_id, args.attempt_id)
         elif args.command in {"send", "interrupt"}:
             from .bridge import request_native
             report = request_native(store, args.run_id, args.task_id, "input" if args.command == "send" else "interrupt",

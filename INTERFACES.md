@@ -152,6 +152,29 @@ not just exit code zero with a JSON error. Command success is exit code zero.
   no remote-tracking ref contains, ignored files,
   incomplete preparation and ownership mismatches. Git helpers use bounded output, owned
   process groups and `GIT_OPTIONAL_LOCKS=0`.
+  When the recorded root no longer exists (lstat finds nothing), the same lock,
+  activity and ownership-path checks run (the root is the expected
+  `runs/<run>/worktrees/<task>-<attempt>` path and `worktrees` is not a symbolic
+  link), and the record is closed instead; nothing is removed or pruned. The
+  source repository must still be its own checkout and answer
+  `git worktree list --porcelain`, or the call raises `WorkspaceRemovalRefused`
+  with `reason` `source_repository_unavailable` (a failure never reads as "not
+  listed"). If Git still lists the root, or an admin entry's
+  `$GIT_COMMON_DIR/worktrees/*/gitdir` names `<root>/.git` (paths compared after
+  realpath), the reason is `registered_but_missing`: inspect it, and prune it
+  with Git if it is really gone. A closed record has the third `removal_basis`,
+  `absent_outside_workbench`, with `retained: false`, `removed_head: null` (the
+  HEAD at removal was never observed), `last_recorded_head` (the attempt-end
+  `final_head` when `evidence_status` is `recorded`, else null),
+  `final_head_on_remote_ref` (the same remote-tracking containment check, run in
+  the source repository; null when there is no recorded head, its commit object
+  is missing or Git fails), `recorded_dirty` (the attempt-end `dirty`),
+  `possible_unpushed_loss` (true when `recorded_dirty` is true or
+  `final_head_on_remote_ref` is not true) and `observed_absent_at`. For this basis
+  `removed_at` is when the record was closed, not when the tree was removed. The
+  `workspace_removed` event carries the basis, `possible_unpushed_loss`,
+  `final_head_on_remote_ref` and `recorded_dirty` as scalars. A directory or
+  symbolic link found at the root is handled, and refused, as before.
 
 Read-only is a declaration, not OS enforcement, except that Codex receives its
 native read-only sandbox. Worktrees are retained by default.
