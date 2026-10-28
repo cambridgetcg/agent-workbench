@@ -8,9 +8,11 @@ sandbox or a shell parser: an agent task's own tools stay governed by its harnes
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path, PurePath
 import re
 import shutil
+import stat
 from urllib.parse import urlsplit
 
 
@@ -627,6 +629,17 @@ def _names(values) -> list[str]:
     return sorted({_name(value) for value in values if isinstance(value, str) and not isinstance(value, _PlainNumber)})
 
 
+def _presence(path, *, want, follow=True) -> str:
+    """present, absent or unknown. Path.exists() and is_file() hide permission errors on Python 3.14."""
+    try:
+        mode = (os.stat if follow else os.lstat)(path).st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return "absent"
+    except (OSError, ValueError):
+        return "unknown"
+    return "present" if want(mode) else "absent"
+
+
 def _collab_package(entry: dict) -> dict:
     from .capabilities import _read, _version
     evidence = "files beside the configured entry, not the running process"
@@ -638,11 +651,7 @@ def _collab_package(entry: dict) -> dict:
             package, status = _read(entry_file.parent.parent / "package.json")
             version = (_version(package.get("version"))
                        if status == "read" and package.get("name") == "@agenttool/collab" else None)
-            host = entry_file.parent / "agenttool-collab-host.js"
-            try:
-                host_cli = "present" if host.is_file() and not host.is_symlink() else "absent"
-            except (OSError, ValueError):
-                host_cli = "unknown"
+            host_cli = _presence(entry_file.parent / "agenttool-collab-host.js", want=stat.S_ISREG, follow=False)
             return {"package_version": version, "host_cli": host_cli, "evidence": evidence}
     return {"package_version": None, "host_cli": "unknown", "evidence": evidence}
 
@@ -879,11 +888,7 @@ def _safe_section(label, build):
 def _managed_hermes_dir(env):
     override = (env.get("HERMES_MANAGED_DIR") or "").strip()
     path = Path(override) if override else Path("/etc/hermes")
-    try:
-        exists = path.is_dir()
-    except (OSError, ValueError):
-        exists = True  # cannot tell, so absence cannot be claimed
-    if not exists:
+    if _presence(path, want=stat.S_ISDIR) == "absent":  # unknown counts as there: absence cannot be claimed
         return None
     return "$HERMES_MANAGED_DIR/config.yaml" if override else "/etc/hermes/config.yaml"
 
@@ -939,10 +944,7 @@ def wiring(*, home, project, env) -> dict:
     project = Path(project) if project is not None else None
     hermes_home = Path(env["HERMES_HOME"]) if env.get("HERMES_HOME") else home / ".hermes"
     hermes_label = "$HERMES_HOME/config.yaml" if env.get("HERMES_HOME") else "~/.hermes/config.yaml"
-    try:
-        active = "present" if (hermes_home / "active_profile").exists() else "absent"
-    except (OSError, ValueError):
-        active = "unknown"
+    active = _presence(hermes_home / "active_profile", want=lambda mode: True)
     managed = _managed_hermes_dir(env)
     sections = {
         "codex": _safe_section("~/.codex/config.toml", lambda: _codex_section(home, project, env)),

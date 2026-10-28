@@ -150,8 +150,10 @@ class WiringEdgeTests(unittest.TestCase):
         self.addCleanup(dist.chmod, 0o700)
         self.write(".hermes/profiles/astra-ultra/config.yaml",
                    "mcp_servers:\n  deep:\n" + "".join("  " * (i + 2) + f"k{i}:\n" for i in range(400)))
-        report = self.report(HERMES_HOME=str(locked / "hermes"))
+        report = self.report(HERMES_HOME=str(locked / "hermes"), HERMES_MANAGED_DIR=str(locked / "managed"))
         self.assertIn("unknown", report["harnesses"]["hermes"]["summary"].values())
+        self.assertEqual(report["harnesses"]["hermes"]["active_profile_file"], "unknown")
+        self.assertEqual(report["harnesses"]["hermes"]["sources"][-1]["status"], "not_read")  # managed scope: can't tell
         self.assertEqual(report["harnesses"]["codex"]["summary"]["public_agenttool"], "unknown")
         collab = next(row for row in report["harnesses"]["claude"]["servers"] if row["name"] == "collab")
         self.assertEqual(collab["collab"]["host_cli"], "unknown")
