@@ -151,7 +151,11 @@ not just exit code zero with a JSON error. Command success is exit code zero.
   contains. It refuses dirty trees, commits
   no remote-tracking ref contains, ignored files,
   incomplete preparation and ownership mismatches. Git helpers use bounded output, owned
-  process groups and `GIT_OPTIONAL_LOCKS=0`.
+  process groups and `GIT_OPTIONAL_LOCKS=0`. The remote-tracking containment check
+  reads local refs only: it runs with `GIT_NO_LAZY_FETCH=1` and an empty
+  `GIT_ALLOW_PROTOCOL` (for Git releases that ignore the first), so a partial
+  clone never fetches a missing commit from its promisor remote; a missing
+  commit makes the check fail, never answer false.
   When the recorded root no longer exists (lstat finds nothing), the same lock,
   activity and ownership-path checks run (the root is the expected
   `runs/<run>/worktrees/<task>-<attempt>` path and `worktrees` is not a symbolic

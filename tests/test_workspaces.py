@@ -435,6 +435,31 @@ run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
                                  ("absent_outside_workbench", remote, recorded_dirty, loss))
                 self.assertEqual(workspace["last_recorded_head"] is not None, has_head)
 
+    def test_absent_tree_check_never_lazy_fetches_in_a_partial_clone(self):
+        # A local "remote" stands in for a network one: a lazy fetch would
+        # start upload-pack there to look for the missing commit.
+        server = self.root / "server"
+        self.repository(server)
+        (server / "tracked.txt").write_text("server\n")
+        self.git(server, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qam", "server")
+        self.git(server, "config", "uploadpack.allowFilter", "true")
+        project = self.root / "partial"
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", server.as_uri(), str(project)],
+                       capture_output=True, check=True)
+        run_id, attempt_id, checkout, head = self.evidenced(project)
+        # The attempt's last commit was garbage-collected after its tree went.
+        self.store.update(run_id, lambda state: state["tasks"][0]["attempts"][0]["workspace"].update(
+            final_head="0123456789abcdef" * 2 + "01234567"))
+        self.git(project, "worktree", "remove", "--force", str(checkout))
+        trace = self.root / "git-trace.txt"
+        with patch.dict(os.environ, {"GIT_TRACE": str(trace)}):
+            workspace = workspaces.remove_clean(self.store, run_id, "work", attempt_id)["tasks"][0]["attempts"][0]["workspace"]
+        self.assertEqual((workspace["removal_basis"], workspace["final_head_on_remote_ref"], workspace["possible_unpushed_loss"]),
+                         ("absent_outside_workbench", None, True))
+        commands = [line.split("built-in: ", 1)[1] for line in trace.read_text().splitlines() if "built-in: " in line]
+        self.assertTrue(any(command.startswith("git for-each-ref") for command in commands))
+        self.assertEqual([command for command in commands if "upload-pack" in command], [])
+
     def test_workspace_remove_command_says_plainly_when_work_may_be_lost(self):
         from agent_workbench.cli import main
         run_id, attempt_id, checkout, head = self.evidenced()

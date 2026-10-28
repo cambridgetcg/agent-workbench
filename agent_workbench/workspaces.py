@@ -384,7 +384,7 @@ def compatible(task, active_tasks):
     return all(other == "worktree" or (mode == other == "read-only") for other in others)
 
 
-def _git(project, *args):
+def _git(project, *args, env=None):
     """Run Git with bounded capture and ownership of its hook/helper group.
 
     A timeout or a parent exiting while a hook keeps the pipes open must not
@@ -393,7 +393,7 @@ def _git(project, *args):
     A helper that deliberately creates a new session is outside this process
     group, just as for native task process groups; this is not an OS sandbox.
     GIT_OPTIONAL_LOCKS=0 keeps status from taking a source checkout's index
-    lock that a concurrent writer may need.
+    lock that a concurrent writer may need. ``env`` adds fixed variables.
     """
     from .runner import _terminate_group
     process = None
@@ -406,7 +406,7 @@ def _git(project, *args):
         spawn = owner.spawn if owner is not None else subprocess.Popen
         process = spawn(["git", "-C", str(project), *args], stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+                        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})},
                         start_new_session=True, close_fds=True)
         for stream in (process.stdout, process.stderr):
             os.set_blocking(stream.fileno(), False)
@@ -666,9 +666,14 @@ def _on_remote_ref(root, commit):
     refs/remotes as of the last fetch and contacts no remote. It is the only
     basis on which any automatic cleanup may remove a tree (clean AND HEAD on a
     remote ref); an unchanged tree at an unpushed base is removed only on request.
+    A missing or non-commit object makes Git fail, never answer False. In a
+    partial clone Git would fetch a missing commit from its promisor remote:
+    GIT_NO_LAZY_FETCH stops that, and for Git releases that ignore it, an empty
+    GIT_ALLOW_PROTOCOL refuses every transport before any connection.
     """
     return bool(_git(root, "for-each-ref", "--count=1", "--format=%(refname)",
-                     "--contains", commit, "refs/remotes/"))
+                     "--contains", commit, "refs/remotes/",
+                     env={"GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}))
 
 
 def _registered_gitdirs(common):
@@ -753,11 +758,9 @@ def _close_absent(store, run_id, task_id, attempt_id, workspace, root):
     on_remote = None
     if final_head is not None:
         try:
-            # A missing commit object, like a Git failure, leaves this unknown.
-            _git(source, "cat-file", "-e", final_head + "^{commit}")
             on_remote = _on_remote_ref(source, final_head)
         except GitWorkspaceError:
-            on_remote = None
+            on_remote = None  # A missing commit object, like any Git failure, leaves this unknown.
     recorded_dirty = workspace.get("dirty") if isinstance(workspace.get("dirty"), bool) else None
     loss = recorded_dirty is True or on_remote is not True
     def closed(current):
