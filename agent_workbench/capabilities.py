@@ -304,7 +304,7 @@ def inspect_launch(task: dict, project: Path, *, env: dict | None = None, home: 
     if hermes:
         result["configuration"] = {"scope": "not_inspected", "hermes": {
             "status": "not_inspected",
-            "reason": "Profile and provider configuration are not evaluated (mcp_servers only locates the profile's config.yaml); this Hermes launch probe does not read Codex or Claude configuration."}}
+            "reason": "Profile and provider configuration are not evaluated (mcp_servers lists configured MCP names only); this Hermes launch probe does not read Codex or Claude configuration."}}
     else:
         result["configuration"] = explain_configuration(project, home=home, env=env)
     from .mcp import mcp_inventory

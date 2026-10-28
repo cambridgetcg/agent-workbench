@@ -82,21 +82,21 @@ whose forwarding and lifecycle must still be verified.
 Before a run, `doctor` prints one line per harness naming the MCP servers its
 child would inherit from native configuration. `explain --harness` (JSON
 `mcp_servers`) and each attempt's launch record carry the same inventory. It
-contains server names only, plus Codex `enabled`/`enabled_tools` count. It
-never shows commands, arguments, environment, URLs or headers. Claude names come
-from `~/.claude.json` (user scope and this project's entry) and `.mcp.json`
-files. Claude Code also keeps account state in `~/.claude.json`, and it can hold
-a saved API key: Workbench parses it in memory, only `mcpServers` names leave
-it, and the inventory's `account_state_file_read` records the read. Codex names
-come from `config.toml`.
-Hermes's selected profile `config.yaml` is located but, because the standard
-library has no YAML parser, reported as `not_inspected`. A listed server is
-configured, not observed. Plugins, managed policy, connectors, CLI flags and
-wrappers can change the set, and `incomplete` marks a source that could not be
-inspected. The bundled `hermes-astra-ultra` launcher selects
-`profiles/astra-ultra` in the `HERMES_HOME` installation, which is what
-Workbench inspects. A wrapper that sets its own `HERMES_HOME` is not run, so
-its profile remains a candidate.
+contains server names only, plus Codex `enabled`/`enabled_tools` count and
+Hermes `enabled`/`trust`/`tools.include` count. It never shows commands,
+arguments, environment, URLs or headers. Claude names come from `~/.claude.json`
+(user scope and this project's entry) and `.mcp.json` files. Claude Code also
+keeps account state in `~/.claude.json`, and it can hold a saved API key:
+Workbench parses it in memory, only `mcpServers` names leave it, and the
+inventory's `account_state_file_read` records the read. Codex names come from
+`config.toml`. Hermes names come from the selected profile's `config.yaml`, read
+by a minimal stdlib parser that reports `unparsed` for YAML it does not
+interpret. A listed server is configured, not observed. Plugins, managed policy,
+connectors, CLI flags and wrappers can change the set, and `incomplete` marks a
+source that could not be inspected. The bundled `hermes-astra-ultra` launcher
+selects `profiles/astra-ultra` in the `HERMES_HOME` installation, which is what
+Workbench inspects. A wrapper that sets its own `HERMES_HOME` is not run, so its
+profile remains a candidate.
 
 Before each attempt, the runner records a private `launch.json` and uses the
 selected absolute entry point. This explains PATH drift between shells without

@@ -12,6 +12,56 @@ SECRETS = ("private-command", "private-argument", "PRIVATE_ENV_VALUE", "private.
 SERVER = {"command": "private-command", "args": ["private-argument"], "env": {"API_TOKEN": "PRIVATE_ENV_VALUE"}}
 REMOTE = {"url": "https://private.example/mcp", "headers": {"Authorization": "Bearer private-bearer-token"}}
 
+# The same Hermes servers in the styles Hermes and editors write: PyYAML's block
+# style with indentless sequences, a one-line flow document and wrapped flow.
+HERMES_EXPECTED = [{"name": "agentlayer", "tools_include_count": 2},
+                   {"name": "telescope", "enabled": False, "trust": "untrusted", "tools_include_count": 0},
+                   {"name": "public", "enabled": True, "trust": "full"}]
+HERMES_BLOCK = """model:
+  default: gpt-6-astra  # comment
+mcp_servers:
+  agentlayer:
+    command: private-command
+    args:
+    - private-argument
+    - "--flag: private-argument"
+    env:
+      API_TOKEN: 'PRIVATE_ENV_VALUE'
+    tools:
+      include:
+      - collab_next
+      - task_*
+  telescope:
+    command: private-command
+    enabled: false
+    trust: untrusted
+    tools: {include: []}
+  public:
+    url: https://private.example/mcp
+    headers:
+      Authorization: Bearer private-bearer-token
+    enabled: 'yes'
+    trust: Full
+compression:
+  threshold: 0.6
+"""
+HERMES_FLOW = ("{model: {default: gpt-6-astra}, mcp_servers: {agentlayer: {command: private-command, "
+               "args: [private-argument, '--flag: private-argument'], env: {API_TOKEN: \"PRIVATE_ENV_VALUE\"}, "
+               "tools: {include: [collab_next, task_*]}}, telescope: {command: private-command, enabled: false, "
+               "trust: untrusted, tools: {include: []}}, public: {url: 'https://private.example/mcp', "
+               "headers: {Authorization: Bearer private-bearer-token}, enabled: yes, trust: Full}}, "
+               "platform_hints: {cli: {append: \"a, b\"}}}\n")
+HERMES_WRAPPED = """{model: {default: gpt-6-astra},
+  mcp_servers: {agentlayer: {command: private-command, args: [private-argument,
+        '--flag: private-argument'], env: {API_TOKEN: PRIVATE_ENV_VALUE}, tools: {include: [
+          collab_next, task_*]}},
+    telescope: {command: private-command, enabled: false, trust: untrusted, tools: {
+        include: []}},
+    public: {url: 'https://private.example/mcp', headers: {Authorization: Bearer private-bearer-token},
+      enabled: yes, trust: Full}}}
+"""
+
+
 class McpInventoryTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -101,16 +151,57 @@ class McpInventoryTests(unittest.TestCase):
         self.assertEqual(report["status"], "not_configured")
         self.assertEqual([row["source"] for row in report["sources"]], ["$CODEX_HOME/config.toml", "$PROJECT/.codex/config.toml"])
 
-    def test_hermes_profile_is_located_but_not_parsed(self):
-        self.write(".hermes/config.yaml", "mcp_servers:\n  agentlayer:\n    command: private-command\n")
+    def test_hermes_block_and_flow_yaml_give_the_same_inventory(self):
+        for style, text in (("block", HERMES_BLOCK), ("flow", HERMES_FLOW), ("wrapped flow", HERMES_WRAPPED),
+                            ("crlf block", HERMES_BLOCK.replace("\n", "\r\n")), ("document marker", "---\n" + HERMES_BLOCK)):
+            with self.subTest(style=style):
+                self.write(".hermes/config.yaml", text)
+                report = self.inventory("hermes")
+                self.assertEqual(report["status"], "unverified")
+                self.assertEqual(report["sources"][0]["status"], "read")
+                self.assertEqual(report["sources"][0]["servers"], HERMES_EXPECTED)
+                self.assertEqual((report["profile"], report["profile_selection"]), ("~/.hermes", "default_home"))
+                self.assert_private(report)
+
+    def test_unrelated_yaml_features_do_not_block_the_inventory(self):
+        self.write(".hermes/config.yaml", "base: &base {x: 1}\nother:\n  <<: *base\n  ? ''\n  : value\n"
+                                          "prompt: |\n  mcp_servers:\n    fake: {}\nnote: 'quoted\nmcp_servers: {fake: {}}'\n"
+                                          "mcp_servers:\n  real:\n    env: &env {A: \"\\x41\"}\n    headers: *env\n"
+                                          "    args:\n    - - nested\n    - name: compact\n      value: |\n        enabled: false\n")
         report = self.inventory("hermes")
-        self.assertEqual(report["status"], "incomplete")
-        self.assertEqual(report["sources"], [{"source": "~/.hermes/config.yaml", "scope": "profile", "status": "not_inspected",
-                                              "server_count": 0, "servers": []}])
-        self.assertIn("could not be inspected (not_inspected)", report["warnings"][0])
-        self.assert_private(report)
-        (self.home / ".hermes/config.yaml").unlink()
+        self.assertEqual(report["sources"][0]["status"], "read")
+        self.assertEqual(report["sources"][0]["servers"], [{"name": "real"}])
+
+    def test_unsupported_or_malformed_yaml_is_unparsed_not_guessed(self):
+        cases = {"unterminated flow": "mcp_servers: {a: {enabled: true}\n",
+                 "alias server": "mcp_servers:\n  a: &s {enabled: false}\n  b: *s\n",
+                 "merge key": "mcp_servers:\n  a:\n    <<: {enabled: false}\n",
+                 "block scalar flag": "mcp_servers:\n  a:\n    enabled: |\n      false\n",
+                 "tag": "mcp_servers: !!map\n  a: {}\n",
+                 "tab indentation": "mcp_servers:\n\ta: {}\n",
+                 "duplicate server": "mcp_servers:\n  a: {}\n  a: {enabled: false}\n",
+                 "two documents": "mcp_servers: {a: {}}\n---\nmcp_servers: {b: {}}\n",
+                 "stray indentation": "mcp_servers:\n    a: {}\n  b: {}\n",
+                 "mapping in a scalar": "mcp_servers:\n  a:\n    trust: full: yes\n",
+                 "control character": "mcp_servers:\n  a: {}\nnote: \"\x00\"\n",
+                 "invalid UTF-8": b"mcp_servers:\n  a: {}\nnote: \xff\n"}
+        for name, text in cases.items():
+            with self.subTest(case=name):
+                path = self.home / ".hermes/config.yaml"
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(text if isinstance(text, bytes) else text.encode())
+                report = self.inventory("hermes")
+                self.assertEqual(report["status"], "incomplete")
+                self.assertEqual(report["sources"][0]["status"], "unparsed")
+                self.assertEqual(report["sources"][0]["servers"], [])
+                self.assertIn("could not be inspected (unparsed)", report["warnings"][0])
+        self.write(".hermes/config.yaml", "model:\n  default: x\n")
         self.assertEqual(self.inventory("hermes")["status"], "not_configured")
+        self.write(".hermes/config.yaml", "mcp_servers:\n  a:\n  b: {}\n")
+        report = self.inventory("hermes")
+        self.assertEqual((report["status"], report["sources"][0]["servers"]),
+                         ("incomplete", [{"name": "a", "status": "malformed"}, {"name": "b"}]))
+        self.assertIn("1 MCP server entry", report["warnings"][0])
 
     def test_hermes_profile_selection_matches_native_resolution(self):
         root = self.home / "installation"
@@ -119,23 +210,23 @@ class McpInventoryTests(unittest.TestCase):
             self.write(profile + "/config.yaml", f"mcp_servers:\n  {server}: {{}}\n")
         def selected(harness, **kwargs):
             report = self.inventory(harness, **kwargs)
-            return report["profile_selection"], report["sources"][0]["source"]
-        self.assertEqual(selected("hermes"), ("default_home", "~/.hermes/config.yaml"))
+            return report["profile_selection"], [server["name"] for server in report["sources"][0]["servers"]]
+        self.assertEqual(selected("hermes"), ("default_home", ["default-server"]))
         self.env["HERMES_HOME"] = str(root / "profiles/work")
-        self.assertEqual(selected("hermes"), ("hermes_home_profile", "~/installation/profiles/work/config.yaml"))
-        self.assertEqual(selected("hermes-astra-ultra"), ("astra_ultra_wrapper_candidate", "~/installation/profiles/astra-ultra/config.yaml"))
+        self.assertEqual(selected("hermes"), ("hermes_home_profile", ["work-server"]))
+        self.assertEqual(selected("hermes-astra-ultra"), ("astra_ultra_wrapper_candidate", ["astra-server"]))
         self.env["HERMES_HOME"] = str(root)
-        self.assertEqual(selected("hermes"), ("hermes_home", "~/installation/config.yaml"))
+        self.assertEqual(selected("hermes"), ("hermes_home", ["root-server"]))
         self.write("installation/active_profile", "\ufeffWork\n")
-        self.assertEqual(selected("hermes"), ("sticky_active_profile", "~/installation/profiles/work/config.yaml"))
+        self.assertEqual(selected("hermes"), ("sticky_active_profile", ["work-server"]))
         self.write("installation/active_profile", "Default\n")
-        self.assertEqual(selected("hermes"), ("hermes_home", "~/installation/config.yaml"))
+        self.assertEqual(selected("hermes"), ("hermes_home", ["root-server"]))
         self.write("installation/active_profile", "../escape\n")
         report = self.inventory("hermes")
         self.assertEqual(report["profile_selection"], "active_profile_uninterpretable")
         self.assertIn("active_profile could not be interpreted", report["warnings"][0])
         self.env["HERMES_HOME"] = "./installation/profiles/work"
-        self.assertEqual(selected("hermes", cwd=self.home), ("hermes_home_profile", "~/installation/profiles/work/config.yaml"))
+        self.assertEqual(selected("hermes", cwd=self.home), ("hermes_home_profile", ["work-server"]))
 
     def test_astra_wrapper_candidate_and_safe_mode_are_flagged(self):
         report = self.inventory("hermes-astra-ultra")
@@ -148,9 +239,8 @@ class McpInventoryTests(unittest.TestCase):
         self.write(".hermes/profiles/astra-ultra/config.yaml", "mcp_servers: {agenttool: {trust: full}}\n")
         self.env["HERMES_SAFE_MODE"] = "1"
         report = self.inventory("hermes-astra-ultra")
-        self.assertEqual(report["sources"][0]["status"], "not_inspected")
-        self.assertEqual(report["warnings"][0], "HERMES_SAFE_MODE is set; Hermes loads no MCP servers in safe mode.")
-        self.assertFalse(any("may use another installation" in text for text in report["warnings"]))
+        self.assertEqual(report["status"], "unverified")
+        self.assertEqual(report["warnings"], ["HERMES_SAFE_MODE is set; Hermes loads no MCP servers in safe mode."])
         self.assertEqual(self.inventory("hermes")["status"], "not_configured")
 
     def test_unreadable_sources_and_entries_warn_without_values(self):
@@ -201,7 +291,7 @@ class McpInventoryTests(unittest.TestCase):
     def test_inventory_only_reads_files(self):
         self.write(".claude.json", {"mcpServers": {"agentlayer": SERVER}})
         self.write(".codex/config.toml", '[mcp_servers.agentlayer]\ncommand = "private-command"\n')
-        self.write(".hermes/config.yaml", "mcp_servers:\n  agentlayer:\n    command: private-command\n")
+        self.write(".hermes/config.yaml", HERMES_BLOCK)
         before = {path: path.read_bytes() for path in self.home.rglob("*") if path.is_file()}
         with patch("subprocess.Popen", side_effect=AssertionError("No process may start")):
             reports = [self.inventory(harness) for harness in ("codex", "claude", "astra", "astra-ultra", "hermes", "hermes-astra-ultra")]

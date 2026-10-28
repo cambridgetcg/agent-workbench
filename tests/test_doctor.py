@@ -378,15 +378,13 @@ class DoctorTests(unittest.TestCase):
         text = doctor.format_report(report)
         self.assertIn("MCP servers for codex (configured names only): docs (disabled), agentlayer [unverified]", text)
         self.assertIn("MCP servers for claude (configured names only): agentlayer [unverified]", text)
-        self.assertIn("MCP servers for hermes (configured names only): none [incomplete]; MCP servers in ~/.hermes/config.yaml "
-                      "could not be inspected (not_inspected)", text)
+        self.assertIn("MCP servers for hermes (configured names only): telescope [unverified]", text)
         self.assertIn("MCP servers for hermes-astra-ultra (configured names only): none [incomplete]; No Hermes configuration at "
                       "~/.hermes/profiles/astra-ultra/config.yaml", text)
         self.env["HERMES_HOME"] = str(self.home / "relocated")
         report = self.diagnose()
         text = doctor.format_report(report)
-        self.assertIn("MCP servers for hermes-astra-ultra (configured names only): none [incomplete]; MCP servers in "
-                      "~/relocated/profiles/astra-ultra/config.yaml could not be inspected (not_inspected)", text)
+        self.assertIn("MCP servers for hermes-astra-ultra (configured names only): agenttool [unverified]", text)
         rendered = json.dumps(report) + text
         for secret in ("private-mcp-command", "private-argument", "private.example", "private-token",
                        "private-person@example.invalid", str(self.home)):

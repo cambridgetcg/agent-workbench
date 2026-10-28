@@ -150,12 +150,15 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(codex["sources"][0]["servers"], [{"name": "codex-server", "enabled_tools_count": 1}])
         with patch.object(capabilities, "explain_configuration", side_effect=AssertionError("No Claude or Codex reads")):
             hermes = self.inspect({"harness": "hermes"})
-        self.assertEqual(hermes["mcp_servers"]["status"], "incomplete")
-        self.assertTrue(any("could not be inspected (not_inspected)" in warning for warning in hermes["warnings"]))
+        self.assertEqual(hermes["mcp_servers"]["sources"][0]["servers"], [{"name": "hermes-server", "trust": "untrusted"}])
         self.assertNotIn("claude-server", json.dumps(hermes))
         rendered = json.dumps([claude, codex, hermes])
         for secret in ("private-mcp-command", "private-env", "private.example", "private-argument"):
             self.assertNotIn(secret, rendered)
+        self.write(".hermes/config.yaml", "mcp_servers: {broken: [\n")
+        profile = self.inspect({"harness": "hermes"})
+        self.assertEqual(profile["mcp_servers"]["status"], "incomplete")
+        self.assertTrue(any("could not be inspected (unparsed)" in warning for warning in profile["warnings"]))
 
     def test_launch_inspection_opens_account_state_only_for_mcp_names(self):
         from agent_workbench import mcp

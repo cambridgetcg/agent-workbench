@@ -394,7 +394,7 @@ def _hermes(home, env):
     return {"executables": executables, "astra_ultra_profile_present": profile.is_dir(),
             "subscription_binding": auth,
             "limitations": ["Native version probes are opt-in through explain because Hermes can check for updates.",
-                            "Profile configuration, tool readiness and actual request effort are not inspected here."]}
+                            "Profile configuration other than MCP server names, tool readiness and actual request effort are not inspected here."]}
 
 
 def diagnose(*, project: Path | None = None, home: Path | None = None,
