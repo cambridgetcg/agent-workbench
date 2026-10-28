@@ -765,6 +765,10 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted, ownership):
                 project = store.read(run_id)["project"]
                 environment = native_environment()
                 removed = host_session_variables(os.environ)
+                # Names and non-secret values marking a Workbench-launched child,
+                # overwriting any inherited from an outer run; the CLI's host-only
+                # commands refuse inside a child of the same state root.
+                environment.update(AGENT_WORKBENCH_ATTEMPT=attempt_id, AGENT_WORKBENCH_STATE_ROOT=str(store.root))
                 workspace = prepare(store, run_id, task, attempt_id, project, lease_stack=workspace_leases)
                 store.update(run_id, lambda state: _task_by_id(state, task_id)["attempts"][-1].update(workspace=workspace))
                 if task.get("workspace") == "worktree":

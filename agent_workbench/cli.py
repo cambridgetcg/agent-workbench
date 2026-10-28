@@ -4,11 +4,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
 from . import __version__
 from .store import Store, add_event, now, MAX_DOCUMENT_BYTES, HARNESSES, EFFORTS, SANDBOXES
+
+
+# Run control and other effects that belong to the person or the host session
+# that launched a run. create --collab-parent is checked as well.
+HOST_ONLY_COMMANDS = frozenset({"run", "retry", "recover", "stop", "pause", "steer", "send", "interrupt",
+                                "workspace-remove", "eval-run"})
+CHILD_REFUSAL = ("inside_workbench_child: This command is for the person or the host session that launched "
+                 "the run, not for a Workbench-launched agent.")
+
+
+def inside_workbench_child(state_root: Path, env=None) -> bool:
+    """True inside a Workbench-launched child of the same state root.
+
+    The runner sets AGENT_WORKBENCH_ATTEMPT and AGENT_WORKBENCH_STATE_ROOT in
+    every task it launches. A speed bump against accidental self-steering, not
+    a security boundary: a process can unset them. A child using another state
+    root (a test, a nested experiment) is unaffected.
+    """
+    env = os.environ if env is None else env
+    attempt, root = env.get("AGENT_WORKBENCH_ATTEMPT"), env.get("AGENT_WORKBENCH_STATE_ROOT")
+    return bool(attempt) and bool(root) and os.path.realpath(root) == str(state_root)
 
 
 def read_input(path: Path, *, limit: int = MAX_DOCUMENT_BYTES) -> str:
@@ -276,6 +298,9 @@ def parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command in HOST_ONLY_COMMANDS or args.command == "create" and args.collab_parent is not None:
+            if inside_workbench_child(Store(args.state_dir).root):
+                raise ValueError(CHILD_REFUSAL)
         if args.command == "doctor":
             from .doctor import diagnose, format_report
             report = diagnose(project=args.project, probe=args.probe)

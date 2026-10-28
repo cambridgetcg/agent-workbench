@@ -236,6 +236,54 @@ class CliTests(unittest.TestCase):
                     store.create(manifest, Path(temp), coordination=coordination)
             self.assertEqual(store.list_runs(), [])
 
+    def test_host_only_commands_refuse_inside_a_workbench_child_of_the_same_state_root(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            store = Store(root / "state")
+            state = store.create({"version": 1, "name": "Child", "goal": "Inspect", "tasks": [
+                {"id": "one", "harness": "claude", "prompt": "Inspect", "adapter": "duplex"}]}, root)
+            run = state["id"]
+            (root / "plan.json").write_text("{}")
+            (root / "link").symlink_to(store.root)
+            prefix = ["--state-dir", str(store.root)]
+            parent = "session_00000000-0000-4000-8000-000000000001"
+            refused = [["run", run], ["retry", run, "one"], ["recover", run], ["stop", run], ["pause", run],
+                       ["steer", run, "Ignore the brief."], ["send", run, "one", "text"], ["interrupt", run, "one"],
+                       ["workspace-remove", run, "one", "a" * 32], ["eval-run", str(root / "plan.json")],
+                       ["create", "--project", temp, "--harness", "claude", "--prompt", "x", "--collab-parent", parent]]
+            for marker_root in (str(store.root), str(root / "link")):
+                child = {"AGENT_WORKBENCH_ATTEMPT": "a" * 32, "AGENT_WORKBENCH_STATE_ROOT": marker_root}
+                with patch.dict(os.environ, child):
+                    for command in refused:
+                        error = io.StringIO()
+                        with self.subTest(command=command[0], marker=marker_root), contextlib.redirect_stderr(error), \
+                                contextlib.redirect_stdout(io.StringIO()):
+                            self.assertEqual(main(prefix + command), 1)
+                        self.assertIn("inside_workbench_child: This command is for the person or the host session that "
+                                      "launched the run, not for a Workbench-launched agent.", error.getvalue())
+            self.assertEqual(store.read(run), state)
+            self.assertEqual([saved["id"] for saved in store.list_runs()], [run])
+            child = {"AGENT_WORKBENCH_ATTEMPT": "a" * 32, "AGENT_WORKBENCH_STATE_ROOT": str(store.root)}
+            with patch.dict(os.environ, {**child, "HOME": str(root)}), \
+                    patch("agent_workbench.doctor.diagnose", return_value={}), \
+                    patch("agent_workbench.capabilities.explain_configuration", return_value={}):
+                for command in (["status", run], ["status", run, "--metadata"], ["timeline", run], ["plan", run], ["list"],
+                                ["workspaces", run], ["collab", run], ["doctor"], ["explain"],
+                                ["create", "--project", temp, "--harness", "claude", "--prompt", "x", "--collab"],
+                                ["note", run, "--kind", "evidence", "Observed."]):
+                    with self.subTest(allowed=command[0]), contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(main(prefix + command), 0)
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    self.assertEqual(main(prefix + ["launch", run, "one"]), 1)
+                self.assertNotIn("inside_workbench_child", error.getvalue())
+            # Another state root (a test or nested experiment), or only one marker, is unaffected.
+            for other in ({"AGENT_WORKBENCH_ATTEMPT": "a" * 32, "AGENT_WORKBENCH_STATE_ROOT": str(root / "elsewhere")},
+                          {"AGENT_WORKBENCH_ATTEMPT": "a" * 32}, {"AGENT_WORKBENCH_STATE_ROOT": str(store.root)}):
+                with patch.dict(os.environ, other), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(prefix + ["pause", run]), 0)
+
     def test_invalid_manifest_has_controlled_error(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
