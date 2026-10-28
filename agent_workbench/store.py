@@ -26,6 +26,8 @@ MAX_DOCUMENT_BYTES = 2_000_000
 # Revisions, not arbitrary arguments: no leading option dash, whitespace or ranges.
 BASE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@^~{}+-]{0,199}\Z")
 SKILL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}\Z")
+# An agenttool collab session ID: a pointer, not a bearer credential.
+COLLAB_SESSION_ID = re.compile(r"session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
 def now() -> str:
@@ -171,6 +173,26 @@ def validate_manifest(manifest: dict) -> dict:
     return result
 
 
+def validate_coordination(coordination) -> dict | None:
+    """Run-level collab opt-in: ``{collab: True, parent_session_id, parent_check}``.
+
+    It lives beside the manifest, never in it, so exports and imports cannot
+    carry it. The parent is lineage the run creator declared, not verified
+    identity; ``parent_check`` records what the create-time journal read found.
+    """
+    if coordination is None:
+        return None
+    if (not isinstance(coordination, dict) or set(coordination) != {"collab", "parent_session_id", "parent_check"}
+            or coordination["collab"] is not True):
+        raise ValueError("Invalid collab coordination settings.")
+    parent, check = coordination["parent_session_id"], coordination["parent_check"]
+    if parent is not None and (not isinstance(parent, str) or not COLLAB_SESSION_ID.fullmatch(parent)):
+        raise ValueError("Collab parent must be a collab session ID (session_ followed by a lowercase UUID).")
+    if check not in ((None,) if parent is None else ("matched", "unavailable")):
+        raise ValueError("Invalid collab parent check.")
+    return {"collab": True, "parent_session_id": parent, "parent_check": check}
+
+
 def read_json(path: Path) -> dict:
     if path.stat().st_size > 20_000_000:
         raise ValueError("State document is too large.")
@@ -209,8 +231,9 @@ class Store:
             raise ValueError("Run directory must not be a symbolic link.")
         return path
 
-    def create(self, manifest: dict, project: Path) -> dict:
+    def create(self, manifest: dict, project: Path, *, coordination: dict | None = None) -> dict:
         manifest = validate_manifest(manifest)
+        coordination = validate_coordination(coordination)
         project = Path(project).expanduser().resolve()
         if not project.is_dir():
             raise ValueError("Project must be an existing directory.")
@@ -220,6 +243,8 @@ class Store:
         state = {**manifest, "id": ident, "project": str(project), "created_at": now(), "updated_at": now(), "revision": 0, "status": "ready", "events": [], "notes": [], "control": {"stop_requested": False, "pause_requested": False, "guidance": []}, "controller": None}
         for task in state["tasks"]:
             task.update(status="pending", attempts=[], result=None)
+        if coordination is not None:
+            state["coordination"] = coordination
         add_event(state, "created")
         write_private_json(directory / "state.json", state)
         return state

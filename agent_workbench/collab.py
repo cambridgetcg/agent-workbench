@@ -31,8 +31,10 @@ import sqlite3
 import stat
 import tomllib
 
+from .store import COLLAB_SESSION_ID
 
-SESSION_ID = re.compile(r"session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+
+SESSION_ID = COLLAB_SESSION_ID
 APPLICATION_ID = 1096041292  # 0x4154434C, collab's journal identity
 SQLITE_HEADER = b"SQLite format 3\x00"
 LABEL_SUFFIX = " · workbench job "

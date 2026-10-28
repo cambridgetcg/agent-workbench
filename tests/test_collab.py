@@ -482,6 +482,102 @@ class DoctorAgenttoolTests(CollabTestCase):
         self.assertIn("hermes (~/.hermes/config.yaml): collab not registered", text)
 
 
+class ParentCheckTests(CollabTestCase):
+    def setUp(self):
+        super().setUp()
+        import subprocess
+        subprocess.run(["git", "init", "-q", str(self.project)], check=True, capture_output=True)
+        self.key = collab.repository_key(self.project)
+        self.parent = session_id(77)
+
+    def create(self, *options):
+        environment = {key: value for key, value in os.environ.items() if key not in HOST_VARIABLES}
+        output, error = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {**environment, "HOME": str(self.home)}, clear=True), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = main(["--state-dir", str(self.store.root), "create", "--project", str(self.project),
+                         "--prompt", "Work.", "--collab-parent", self.parent, *options])
+        state = self.store.read(output.getvalue().strip()) if code == 0 else None
+        return code, state, error.getvalue()
+
+    def test_repository_key_follows_collab_rule(self):
+        import hashlib
+        expected = "local-git:" + hashlib.sha256(os.path.realpath(self.project / ".git").encode()).hexdigest()
+        self.assertEqual(self.key, expected)
+        self.assertIsNone(collab.repository_key(self.home))
+
+    def test_parent_in_this_repository_is_matched(self):
+        connection = build_journal(self.journal)
+        self.addCleanup(connection.close)
+        add_session(connection, 77, root=str(self.project), repository_key=self.key)
+        self.register_claude()
+        code, state, error = self.create("--harness", "claude")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(state["coordination"], {"collab": True, "parent_session_id": self.parent, "parent_check": "matched"})
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--state-dir", str(self.store.root), "status", state["id"], "--metadata"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["coordination"],
+                         {"collab": True, "parent_set": True, "parent_session_id": self.parent})
+
+    def test_parent_of_another_repository_or_absent_is_refused_before_saving(self):
+        connection = build_journal(self.journal)
+        self.addCleanup(connection.close)
+        add_session(connection, 77, root="/elsewhere", workspace="ws_other", repository_key="local-git:" + "f" * 64)
+        self.register_claude()
+        code, state, error = self.create("--harness", "claude")
+        self.assertEqual(code, 1)
+        self.assertIn("collab_parent_other_repository", error)
+        self.parent = session_id(78)
+        code, state, error = self.create("--harness", "claude")
+        self.assertEqual(code, 1)
+        self.assertIn("collab_parent_not_found", error)
+        self.assertEqual(self.store.list_runs(), [])
+        self.assert_private(error)
+
+    def test_unreadable_journal_or_undecidable_repository_is_accepted_as_unavailable(self):
+        code, state, error = self.create("--harness", "claude")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(state["coordination"]["parent_check"], "unavailable")
+        self.register_claude()
+        self.journal.parent.mkdir(parents=True)
+        self.journal.write_text("placeholder\n" * 60)
+        self.assertEqual(self.create("--harness", "claude")[1]["coordination"]["parent_check"], "unavailable")
+        self.journal.unlink()
+        connection = build_journal(self.journal)
+        self.addCleanup(connection.close)
+        add_session(connection, 77, root=str(self.project), repository_key="remote:github.com/x/y")
+        self.assertEqual(self.create("--harness", "claude")[1]["coordination"]["parent_check"], "unavailable")
+        # One harness's journal matched, another's could not be read: not fully verified.
+        connection.execute("UPDATE workspaces SET repository_key = ?", (self.key,))
+        connection.commit()
+        manifest = self.root / "two.json"
+        manifest.write_text(json.dumps({"version": 1, "name": "two", "goal": "two", "tasks": [
+            {"id": "a", "harness": "claude", "prompt": "a"}, {"id": "b", "harness": "codex", "prompt": "b"}]}))
+        environment = {key: value for key, value in os.environ.items() if key not in HOST_VARIABLES}
+        output = io.StringIO()
+        with patch.dict(os.environ, {**environment, "HOME": str(self.home)}, clear=True), contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--state-dir", str(self.store.root), "create", str(manifest), "--project", str(self.project),
+                                   "--collab-parent", self.parent]), 0)
+        self.assertEqual(self.store.read(output.getvalue().strip())["coordination"]["parent_check"], "unavailable")
+        self.register_codex()
+        output = io.StringIO()
+        with patch.dict(os.environ, {**environment, "HOME": str(self.home)}, clear=True), contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--state-dir", str(self.store.root), "create", str(manifest), "--project", str(self.project),
+                                   "--collab-parent", self.parent]), 0)
+        self.assertEqual(self.store.read(output.getvalue().strip())["coordination"]["parent_check"], "matched")
+
+    def test_runs_without_a_parent_never_read_the_journal(self):
+        self.register_claude()
+        with patch.object(collab, "read_journal", side_effect=AssertionError("no journal read")), \
+                patch.object(collab, "resolve_journal", side_effect=AssertionError("no journal read")):
+            for options in ([], ["--collab"]):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(main(["--state-dir", str(self.store.root), "create", "--project", str(self.project),
+                                           "--harness", "claude", "--prompt", "Work.", *options]), 0)
+
+
 class CollabCommandTests(CollabTestCase):
     def test_collab_command_is_read_only_and_prints_no_paths_or_actor_text(self):
         connection = build_journal(self.journal)

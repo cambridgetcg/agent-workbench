@@ -178,6 +178,64 @@ class CliTests(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(main(prefix + ["timeline", state["id"], "--limit", "0"]), 1)
 
+    def test_collab_opt_in_is_run_level_for_prompt_and_manifest_creates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "state")
+            prefix = ["--state-dir", str(store.root), "create", "--project", temp]
+            manifest = {"version": 1, "name": "Board", "goal": "Coordinate", "tasks": [
+                {"id": "work", "harness": "hermes-astra-ultra", "prompt": "Work.", "workspace": "worktree"}]}
+            created = []
+            for options, stdin in ((["--harness", "claude", "--prompt", "Work.", "--collab"], ""),
+                                   (["-", "--collab"], json.dumps(manifest)), (["--harness", "codex", "--prompt", "Work."], "")):
+                output = io.StringIO()
+                with patch("sys.stdin", io.StringIO(stdin)), contextlib.redirect_stdout(output):
+                    self.assertEqual(main(prefix + options), 0)
+                created.append(store.read(output.getvalue().strip()))
+            opted = {"collab": True, "parent_session_id": None, "parent_check": None}
+            self.assertEqual([state.get("coordination") for state in created], [opted, opted, None])
+            self.assertEqual(created[1]["tasks"][0]["workspace"], "worktree")
+            self.assertTrue(all("coordination" not in task for state in created for task in state["tasks"]))
+            self.assertEqual(plan_view(created[0])["coordination"], opted)
+            self.assertEqual(plan_view(created[2])["coordination"], {**opted, "collab": False})
+            self.assertNotIn("coordination", plan_view(created[0])["manifest"])
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--state-dir", str(store.root), "status", created[0]["id"], "--json"]), 0)
+            self.assertEqual(json.loads(output.getvalue())["coordination"], opted)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--state-dir", str(store.root), "status", created[0]["id"]]), 0)
+            self.assertIn("Collab: agent tasks get the Workbench board note", output.getvalue())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--state-dir", str(store.root), "status", created[0]["id"], "--metadata"]), 0)
+            self.assertEqual(json.loads(output.getvalue())["coordination"], {"collab": True, "parent_set": False, "parent_session_id": None})
+            from agent_workbench.handoff import export_handoff, import_handoff
+            export_handoff(store, created[1]["id"], root / "handoff.json")
+            self.assertNotIn("coordination", (root / "handoff.json").read_text())
+            self.assertNotIn("coordination", (root / "handoff.md").read_text())
+            imported = import_handoff(store, root / "handoff.json", root)
+            self.assertNotIn("coordination", imported)
+
+    def test_collab_parent_must_be_a_session_id_and_coordination_is_validated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "state")
+            prefix = ["--state-dir", str(store.root), "create", "--project", temp, "--harness", "claude", "--prompt", "Work."]
+            for parent in ("session_NOT-A-UUID", "session_00000000-0000-4000-8000-00000000000G", "ses_x", ""):
+                with self.subTest(parent=parent), contextlib.redirect_stderr(io.StringIO()) as error:
+                    self.assertEqual(main(prefix + ["--collab-parent", parent]), 1)
+                self.assertIn("Collab parent must be a collab session ID", error.getvalue())
+            self.assertEqual(store.list_runs(), [])
+            manifest = {"version": 1, "name": "x", "goal": "x", "tasks": [{"id": "a", "harness": "codex", "prompt": "x"}]}
+            for coordination in ({"collab": False, "parent_session_id": None, "parent_check": None},
+                                 {"collab": True, "parent_session_id": None, "parent_check": "matched"},
+                                 {"collab": True, "parent_session_id": "session_00000000-0000-4000-8000-000000000000", "parent_check": None},
+                                 {"collab": True}):
+                with self.subTest(coordination=coordination), self.assertRaises(ValueError):
+                    store.create(manifest, Path(temp), coordination=coordination)
+            self.assertEqual(store.list_runs(), [])
+
     def test_invalid_manifest_has_controlled_error(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

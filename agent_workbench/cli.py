@@ -68,6 +68,11 @@ def redacted_view(value):
     return value
 
 
+def coordination_view(state: dict) -> dict:
+    from .collab import coordination_view as view
+    return view(state)
+
+
 def status_view(state: dict) -> dict:
     from .views import status_details
     details = status_details(state)
@@ -84,6 +89,7 @@ def status_view(state: dict) -> dict:
         "tasks": [{"id": t["id"], "harness": t["harness"], "status": t["status"],
                    "depends_on": t["depends_on"], "attempts": len(t["attempts"]),
                    "result": t.get("result"), **details["tasks"][t["id"]]} for t in state["tasks"]],
+        "coordination": coordination_view(state),
         "notes_count": len(state["notes"]),
         "imported_history": bool(state.get("handoff")),
         "status_reason": last_boundary.get("reason"),
@@ -104,6 +110,11 @@ def print_status(state: dict, as_json=False) -> None:
     print(f"Goal: {safe_terminal(view['goal'])}")
     if view["status_reason"]:
         print(f"Reason: {safe_terminal(view['status_reason'])}")
+    coordination = view["coordination"]
+    if coordination["collab"]:
+        parent = coordination["parent_session_id"]
+        print("Collab: agent tasks get the Workbench board note" + (
+            f"; declared parent {parent} (unverified lineage; create-time check {coordination['parent_check']})" if parent else ""))
     for task in view["tasks"]:
         deps = ", ".join(task["depends_on"]) or "none"
         print(f"  {task['id']}: {task['status']} ({task['harness']}, attempts {task['attempts']}, after {deps})")
@@ -138,6 +149,7 @@ def plan_view(state: dict) -> dict:
     return redacted_view({"id": state["id"], "manifest": {
         "version": 1, "name": state["name"], "goal": state["goal"],
         "tasks": [{k: v for k, v in task.items() if k in TASK_FIELDS} for task in state["tasks"]]},
+        "coordination": coordination_view(state),
         "notes": state["notes"], "handoff": state.get("handoff"),
         "display": "Credential-like strings are redacted in this view; the saved plan is unchanged."})
 
@@ -174,6 +186,10 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--skill", action="append", help="Hermes skill to preload; repeat for several")
     c.add_argument("--run-budget", type=int, help="Hermes graceful wall-clock budget in seconds (below --timeout-seconds)")
     c.add_argument("--timeout-seconds", type=float, help="Hard time limit for this task in seconds")
+    c.add_argument("--collab", action="store_true",
+                   help="Give agent tasks a Workbench note on using the agenttool collab board (also with a manifest)")
+    c.add_argument("--collab-parent", metavar="SESSION_ID",
+                   help="Declare a collab parent session for the note's children (implies --collab; checked read-only)")
     ls = sub.add_parser("list", help="List saved local runs")
     ls.add_argument("--json", action="store_true")
     ls.add_argument("--project", type=Path, help="Only show runs for this project")
@@ -299,7 +315,20 @@ def main(argv=None) -> int:
         if hasattr(args, "run_id"):
             args.run_id = store.resolve_run_id(args.run_id)
         if args.command == "create":
-            state = store.create(creation_manifest(args), args.project)
+            manifest = creation_manifest(args)
+            coordination = None
+            if args.collab or args.collab_parent is not None:
+                coordination = {"collab": True, "parent_session_id": None, "parent_check": None}
+            if args.collab_parent is not None:
+                from .collab import check_parent
+                from .store import validate_manifest
+                project = args.project.expanduser().resolve()
+                if not project.is_dir():
+                    raise ValueError("Project must be an existing directory.")
+                harnesses = [task["harness"] for task in validate_manifest(manifest)["tasks"]]
+                check = check_parent(harnesses, project, args.collab_parent)
+                coordination.update(parent_session_id=args.collab_parent, parent_check=check)
+            state = store.create(manifest, args.project, coordination=coordination)
             print(state["id"])
         elif args.command == "list":
             states = store.list_runs()

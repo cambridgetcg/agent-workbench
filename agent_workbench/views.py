@@ -193,8 +193,16 @@ def timeline_view(state: dict, limit: int = 20) -> dict:
 
 
 def metadata_view(state):
-    """Minimal plugin/UI contract: no goals, summaries, notes, paths or logs."""
+    """Minimal plugin/UI contract: no goals, summaries, notes, paths or logs.
+
+    The collab parent is a local session pointer, like a native session ID.
+    """
+    from .collab import coordination_view
+    coordination = coordination_view(state)
     return {**_selected(state, ("id", "status", "revision")),
+            "coordination": {"collab": coordination["collab"],
+                             "parent_set": coordination["parent_session_id"] is not None,
+                             "parent_session_id": coordination["parent_session_id"]},
             "tasks": [{**_selected(task, ("id", "harness", "status", "adapter", "workspace")),
                        "attempts": len(task.get("attempts", []))} for task in state.get("tasks", [])],
             "queued_guidance_count": len(state.get("control", {}).get("guidance", [])),
