@@ -131,8 +131,11 @@ Workbench timelines label them `Collab`. Hermes gives an MCP server only a safe
 environment baseline plus the server's own `env` block, so the journal location
 must be set there. Workbench reads the profile's `mcp_servers` block (the active
 profile for `hermes`, `astra-ultra` for `hermes-astra-ultra`) for `doctor` and
-`collab RUN` only, with a narrow scanner of that one block that never reads
-`providers`; it changes nothing. Workbench strips an inherited `TERMINAL_CWD`
+`collab RUN` only. Inside a Hermes profile terminal, where Hermes exports
+`HERMES_HOME` as the profile directory, it finds the Hermes root as Hermes does,
+two levels up, and takes that directory as the active profile. It reads with a
+narrow scanner of that one block that never reads `providers`, and changes
+nothing. Workbench strips an inherited `TERMINAL_CWD`
 from every launch, because Hermes exports it to its terminals and a child Hermes
 session would otherwise anchor its tools away from the Workbench worktree. See
 [Coordination with agenttool](../README.md#coordination-with-agenttool).
