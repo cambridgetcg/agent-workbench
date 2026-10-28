@@ -162,7 +162,13 @@ not just exit code zero with a JSON error. Command success is exit code zero.
   listed"). If Git still lists the root, or an admin entry's
   `$GIT_COMMON_DIR/worktrees/*/gitdir` names `<root>/.git` (paths compared after
   realpath), the reason is `registered_but_missing`: inspect it, and prune it
-  with Git if it is really gone. A closed record has the third `removal_basis`,
+  with Git if it is really gone. Git names the admin entry after the root's
+  directory, `<task>-<attempt>` (with a numeric suffix when that name was taken),
+  and `git worktree move` or `repair` keeps the name while changing its gitdir:
+  while such an entry's gitdir names an existing path elsewhere the reason is
+  `registered_elsewhere` (the tree may have been moved; `git worktree list`
+  shows where), and while its gitdir names nothing it is again
+  `registered_but_missing`. A closed record has the third `removal_basis`,
   `absent_outside_workbench`, with `retained: false`, `removed_head: null` (the
   HEAD at removal was never observed), `last_recorded_head` (the attempt-end
   `final_head` when `evidence_status` is `recorded`, else null),

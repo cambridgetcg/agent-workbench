@@ -242,12 +242,14 @@ For a tree already deleted outside Workbench, `workspace-remove` closes its
 record without removing anything, once Git no longer registers the tree. It
 refuses with `registered_but_missing` while `git worktree list` or Git's own
 admin entry still names the path (inspect it, and prune it with Git yourself if
-it is really gone; Workbench never prunes), and with
-`source_repository_unavailable` when the source repository cannot answer. The
-record says `removal_basis: absent_outside_workbench` and keeps the attempt's
-last recorded HEAD and dirtiness. When the attempt ended dirty, or that HEAD is
-not known to be on a remote-tracking ref, `possible_unpushed_loss` is true and
-the command says so.
+it is really gone; Workbench never prunes), with `registered_elsewhere` while
+the tree's admin entry points at another existing path (`git worktree move`
+keeps the entry), and with `source_repository_unavailable` when the source
+repository cannot answer. The record says
+`removal_basis: absent_outside_workbench` and keeps the attempt's last recorded
+HEAD and dirtiness. When the attempt ended dirty, or that HEAD is not known to
+be on a remote-tracking ref, `possible_unpushed_loss` is true and the command
+says so.
 
 ## Control and recover
 

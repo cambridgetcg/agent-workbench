@@ -672,14 +672,16 @@ def _on_remote_ref(root, commit):
 
 
 def _registered_gitdirs(common):
-    """Resolved targets of the admin entries' ``gitdir`` files under ``common/worktrees``.
+    """Admin entry names under ``common/worktrees`` and their resolved ``gitdir`` targets.
 
     Git keeps one admin directory per linked worktree, whose ``gitdir`` names the
     tree's ``.git`` file, absolutely or (worktree.useRelativePaths) relative to
-    the admin directory. A missing ``worktrees`` directory means none; any other
+    the admin directory. The entry is named after the tree's directory when it
+    is added, and keeps that name when ``git worktree move`` or ``repair``
+    changes its gitdir. A missing ``worktrees`` directory means none; any other
     read failure raises, so it can never read as "not registered".
     """
-    targets = set()
+    targets = {}
     try:
         entries = os.scandir(common / "worktrees")
     except FileNotFoundError:
@@ -705,7 +707,7 @@ def _registered_gitdirs(common):
             if len(raw) > _ADMIN_GITDIR_BYTES:
                 raise OSError("Worktree admin gitdir is too large")
             target = Path(os.fsdecode(raw.rstrip(b"\r\n")))
-            targets.add(os.path.realpath(target if target.is_absolute() else Path(entry.path) / target))
+            targets[entry.name] = os.path.realpath(target if target.is_absolute() else Path(entry.path) / target)
     return targets
 
 
@@ -715,8 +717,9 @@ def _close_absent(store, run_id, task_id, attempt_id, workspace, root):
     Runs under the caller's controller lock, after remove_clean's ownership-path
     checks. Nothing is removed or pruned. The record closes only when the source
     repository is still its own checkout, ``git worktree list`` no longer lists
-    the root and no admin entry's ``gitdir`` points into it; a Git or read
-    failure refuses rather than reading as unregistered. The tree's state when
+    the root, no admin entry's ``gitdir`` points into it and no admin entry
+    still carries the name Git gave this tree (a moved tree keeps it); a Git or
+    read failure refuses rather than reading as unregistered. The tree's state when
     it was removed was never observed, so ``removed_head`` is None and the
     attempt-end evidence is carried as ``last_recorded_head`` and ``recorded_dirty``.
     """
@@ -733,7 +736,15 @@ def _close_absent(store, run_id, task_id, attempt_id, workspace, root):
             "cannot be checked; nothing was changed") from None
     target = os.path.realpath(root)
     listed_roots = {os.path.realpath(line[len("worktree "):]) for line in listed.splitlines() if line.startswith("worktree ")}
-    if target in listed_roots or os.path.realpath(root / ".git") in admin:
+    # Git named the admin entry after the root's directory, adding a number
+    # when that name was taken; move and repair keep the name.
+    own = re.compile(re.escape(root.name) + r"(?:[1-9][0-9]*)?\Z")
+    renamed = [gitdir for name, gitdir in admin.items() if own.match(name)]
+    if any(os.path.lexists(gitdir) for gitdir in renamed if gitdir != os.path.realpath(root / ".git")):
+        raise WorkspaceRemovalRefused("registered_elsewhere",
+            "Git still registers this attempt's worktree at another path, so it may have been moved; "
+            "`git worktree list` in the source repository shows where. Workbench removed nothing and kept the record")
+    if target in listed_roots or os.path.realpath(root / ".git") in admin.values() or renamed:
         raise WorkspaceRemovalRefused("registered_but_missing",
             "Git still registers this worktree although its directory is gone. Inspect it, and prune it with "
             "Git yourself if it is really gone; Workbench never prunes")

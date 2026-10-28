@@ -488,6 +488,29 @@ run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
             self.assertEqual(self.refusal(run_id, attempt_id).reason, "registered_but_missing")
         self.assertTrue(admin.is_dir())
 
+    def test_absent_tree_moved_with_git_is_refused_not_closed(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        (checkout / "work-in-progress.txt").write_text("uncommitted work kept in the moved tree\n")
+        moved = self.root / "moved-tree"
+        # Git keeps the admin entry Workbench created, named <task>-<attempt>,
+        # and points its gitdir at the new location.
+        self.git(self.project, "worktree", "move", str(checkout), str(moved))
+        refused = self.refusal(run_id, attempt_id)
+        self.assertEqual(refused.reason, "registered_elsewhere")
+        self.assertIn("may have been moved", str(refused))
+        self.assertNotIn(str(moved), str(refused))
+        self.assertTrue((moved / "work-in-progress.txt").is_file())
+        # Moved, then deleted without pruning: Git still names the entry.
+        shutil.rmtree(moved)
+        self.assertEqual(self.refusal(run_id, attempt_id).reason, "registered_but_missing")
+        # Git suffixes the entry name with a number when the plain name is taken.
+        admin = self.project / ".git/worktrees"
+        (admin / ("work-" + attempt_id)).rename(admin / ("work-" + attempt_id + "1"))
+        self.assertEqual(self.refusal(run_id, attempt_id).reason, "registered_but_missing")
+        self.git(self.project, "worktree", "prune")
+        state = workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertEqual(state["tasks"][0]["attempts"][0]["workspace"]["removal_basis"], "absent_outside_workbench")
+
     def test_absent_tree_whose_source_cannot_answer_is_refused(self):
         run_id, attempt_id, checkout, head = self.evidenced()
         self.git(self.project, "worktree", "remove", "--force", str(checkout))
