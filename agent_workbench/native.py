@@ -29,7 +29,12 @@ _TASK_STATUSES = _TERMINAL_TASKS | {"pending", "running", "in_progress"}
 _TOOLS = {"Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "PowerShell",
           "Glob", "Grep", "WebSearch", "WebFetch", "Agent", "Task", "Skill",
           "TodoWrite", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskStop",
-          "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "ToolSearch", "MCP"}
+          "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "ToolSearch", "MCP", "Collab", "Lobby"}
+# Fixed agenttool MCP name prefixes, never read from configuration. Claude Code
+# keeps the registered server names; Hermes registers collab under the single
+# server name "agenttool". Only the label leaves: no server name or tool suffix.
+_CLAUDE_MCP_LABELS = (("mcp__agenttool-collab__collab_", "Collab"), ("mcp__agenttool-lobby__", "Lobby"))
+_HERMES_MCP_LABELS = (("mcp__agenttool__collab_", "Collab"),)
 _USAGE_KEYS = {"input_tokens", "output_tokens", "cache_read_input_tokens",
                "cache_creation_input_tokens", "cached_input_tokens", "total_tokens"}
 _RESULT_REASONS = {"completed", "max_turns", "aborted_streaming", "aborted_tools",
@@ -62,6 +67,9 @@ def _tool(value: object) -> str | None:
     if isinstance(value, str):
         if value in _TOOLS:
             return value
+        for prefix, label in _CLAUDE_MCP_LABELS:
+            if value.startswith(prefix):
+                return label
         if value.startswith("mcp__"):
             return "MCP"
     return None
@@ -114,6 +122,11 @@ def _hermes_event(frame: dict) -> list[dict]:
         name = frame.get("name")
         if isinstance(name, str) and name in names:
             event["tool"] = names[name]
+        elif isinstance(name, str):
+            # Other Hermes MCP tools stay unnamed, as any unknown name does.
+            label = next((label for prefix, label in _HERMES_MCP_LABELS if name.startswith(prefix)), None)
+            if label:
+                event["tool"] = label
         if pointer := _pointer(frame.get("tool_call_id")):
             event["tool_use_id"] = pointer
         duration = frame.get("duration_ms")

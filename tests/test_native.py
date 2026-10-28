@@ -384,6 +384,28 @@ class NativeNormalizationTests(unittest.TestCase):
         self.assertNotIn("account", json.dumps(events))
         self.assertEqual(events[0]["parent_tool_use_id"], "parent-1")
 
+    def test_agenttool_mcp_tools_get_fixed_labels_without_server_or_tool_names(self):
+        frame = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "tool-1", "name": "mcp__agenttool-collab__collab_session_start",
+             "input": {"actor": "PRIVATE actor · workbench job x"}},
+            {"type": "tool_use", "id": "tool-2", "name": "mcp__agenttool-lobby__room_read", "input": {"room": "PRIVATE"}},
+            {"type": "tool_use", "id": "tool-3", "name": "mcp__agenttool-collabX__collab_next"},
+            {"type": "tool_use", "id": "tool-4", "name": "mcp__agenttool__collab_next"},
+        ]}}
+        events = normalize_event(frame)
+        self.assertEqual([event.get("tool") for event in events], ["Collab", "Lobby", "MCP", "MCP"])
+        hermes = [normalize_event({"type": "tool_use", "name": name, "tool_call_id": "call-1"}, "hermes-astra-ultra")[0].get("tool")
+                  for name in ("mcp__agenttool__collab_session_start", "mcp__agenttool__collab_events_wait",
+                               "mcp__agenttool_lobby__room_read", "mcp__PRIVATE_server__fetch",
+                               "mcp__agenttool-collab__collab_next")]
+        self.assertEqual(hermes, ["Collab", "Collab", None, None, None])
+        codex = normalize_event({"type": "item.started", "item": {"type": "mcp_tool_call", "id": "item-1",
+                                                                 "server": "agenttool-collab", "tool": "collab_next"}}, "codex")
+        self.assertEqual(codex[0]["tool"], "MCP")
+        rendered = json.dumps([events, hermes, codex])
+        for private in ("PRIVATE", "agenttool", "session_start", "room_read", "collab_next", "events_wait"):
+            self.assertNotIn(private, rendered)
+
     def test_thinking_only_and_raw_stream_deltas_are_ignored(self):
         self.assertEqual(normalize_event({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "PRIVATE"}]}}), [])
         self.assertEqual(normalize_event({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"text": "PRIVATE"}}}), [])
