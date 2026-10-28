@@ -301,8 +301,9 @@ content unknown. Other plugins report `not_compared`. `plugins.codex_entries`
 adds one row per `$CODEX_HOME/plugins/cache/*/agent-workbench/<version>`
 directory (CODEX_HOME defaulting to `~/.codex`) for the stamped version the
 running checkout's `.codex-plugin/plugin.json` names, compared with that
-checkout the same way; when absent, content is unknown. No path, file name or
-content enters these rows, and Codex's plugin registry is not read.
+checkout the same way; when absent, content is unknown. The content fields
+carry no path, file name or file content, and Codex's plugin registry is not
+read.
 
 ## Plugin evaluation (`evaluation.py`)
 
@@ -316,8 +317,9 @@ listed VCS/cache/result paths and rejects symlinks; external dependencies and
 runtime configuration remain unverified. Its hashing loop is
 `payload_digest(plugin, scope=None) -> (sha256, files, bytes)`: the whole tree,
 or a fixed sequence of `(relative path, suffixes)` entries with the same path,
-mode-bit and length framing; `explain` uses it to compare plugin caches. Code or guide changes invalidate a
-saved evaluation plan even when its estimated authoring-token inventory matches.
+mode-bit and length framing; `explain` uses it to compare plugin caches. Code
+or guide changes invalidate a saved evaluation plan even when its estimated
+authoring-token inventory matches.
 
 `evaluation_plan(plugin, *, executable='claude', runs=3, case=None, max_cases=20,
 timeout_seconds=900, max_cost_usd=5, model=None, judge_model=None, allow_tools=(),
