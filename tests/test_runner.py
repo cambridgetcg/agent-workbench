@@ -22,7 +22,10 @@ if "--version" in sys.argv:
     print("vgit.59004a6 (2026.9.24)" if kind.startswith("hermes") else "2.1.282")
     sys.exit(0)
 if "--help" in sys.argv:
-    print("--query-file --format stream-json --reasoning --model --resume" if kind.startswith("hermes") else "--json --output-format stream-json --model --effort")
+    hermes_help = "--query-file --format stream-json --reasoning --model --resume --max-turns --skills"
+    if not os.environ.get("WORKBENCH_FAKE_OLDER_HERMES"):
+        hermes_help += " --run-budget"
+    print(hermes_help if kind.startswith("hermes") else "--json --output-format stream-json --model --effort")
     sys.exit(0)
 prompt = sys.stdin.read()
 mode = prompt.splitlines()[0]
@@ -99,6 +102,9 @@ if mode == "SECRET":
 if mode == "MUTATION_FOOTER":
     text = ("All edits applied.\n\n\u26a0\ufe0f File-mutation verifier: 2 file edit(s) FAILED this turn despite any wording above "
             "that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed.\n  \u2022 `a.txt` \u2014 [patch] failed")
+if mode == "OLDER_MUTATION_FOOTER":
+    text = ("All edits applied.\n\n\u26a0\ufe0f File-mutation verifier: 3 file(s) were NOT modified this turn despite any "
+            "wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.\n  \u2022 `a.txt` \u2014 [patch] failed")
 if mode == "SESSION_FILE":
     text = "session file /var/empty/aw/collab-sessions/session_1f.json done"
 if kind.startswith("hermes"):
@@ -360,6 +366,25 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual(result["warning_count"], 1)
         self.assertIn("2 failed file edit(s)", result["warnings"][0])
+
+    def test_older_hermes_file_mutation_footer_is_also_a_warning(self):
+        state = run_workflow(self.store, self.create([self.agent("edit", "hermes", prompt="OLDER_MUTATION_FOOTER")]))
+        result = state["tasks"][0]["result"]
+        self.assertEqual(state["status"], "succeeded")
+        self.assertEqual(result["warning_count"], 1)
+        self.assertIn("3 failed file edit(s)", result["warnings"][0])
+
+    def test_older_hermes_without_run_budget_refuses_the_budget_before_any_turn(self):
+        with patch.dict(os.environ, {"WORKBENCH_FAKE_OLDER_HERMES": "1"}):
+            budget = run_workflow(self.store, self.create([self.agent("budget", "hermes", run_budget_seconds=60,
+                                                                      timeout_seconds=120)]))["tasks"][0]
+            plain = run_workflow(self.store, self.create([self.agent("plain", "hermes", max_turns=5)]))["tasks"][0]
+        self.assertEqual(budget["status"], "failed")
+        self.assertEqual(budget["result"]["failure_kind"], "launch_error")
+        self.assertIn("--run-budget", budget["result"]["summary"])
+        self.assertIsNone(budget["attempts"][0].get("pid"))
+        self.assertEqual(plain["status"], "succeeded")
+        self.assertEqual([call["argv"][-2:] for call in self.calls()], [["--max-turns", "5"]])
 
     def test_saved_runs_refuse_lobby_commands_and_session_file_prompts_at_launch(self):
         marker = self.root / "lobby-ran"

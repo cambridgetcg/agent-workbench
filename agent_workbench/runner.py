@@ -40,7 +40,9 @@ _EXECUTABLES = {"codex": "codex", "claude": "claude", "astra": "claude-astra", "
                 "hermes": "hermes", "hermes-astra-ultra": "hermes-astra-ultra"}
 _HERMES = {"hermes", "hermes-astra-ultra"}
 _EXTENDED_CLEANUP = {"astra", "astra-ultra", *_HERMES}
-_HERMES_FILE_MUTATION = re.compile(r"(?m)^[ \t]*(?:\u26a0\ufe0f?)?[ \t]*File-mutation verifier:[ \t]*(\d{1,6}) file edit\(s\) FAILED")
+# Current Hermes says "N file edit(s) FAILED"; builds from mid-2026 say "N file(s) were NOT modified".
+_HERMES_FILE_MUTATION = re.compile(r"(?m)^[ \t]*(?:\u26a0\ufe0f?)?[ \t]*File-mutation verifier:[ \t]*(\d{1,6}) "
+                                   r"(?:file edit\(s\) FAILED|file\(s\) were NOT modified)")
 
 
 class WorkflowBusy(RuntimeError):
@@ -752,6 +754,12 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted, ownership):
                 store.update(run_id, profiled)
                 if not profile.get("executable"):
                     raise FileNotFoundError("No such file: selected executable is unavailable")
+                help_flags = profile.get("help", {})
+                if (task.get("run_budget_seconds") and help_flags.get("chat_status") == "reported"
+                        and "--run-budget" not in help_flags.get("flags", [])):
+                    # Older Hermes builds reject the unknown flag before any turn starts.
+                    raise ValueError("This Hermes does not advertise chat --run-budget; remove run_budget_seconds "
+                                     "and use timeout_seconds for the wall-clock limit.")
                 duplex = task.get("adapter") == "duplex"
                 args = _argv(task)
                 args[0] = profile["executable"]
