@@ -63,6 +63,13 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   drains active tasks; `stop` terminates owned active process groups. Failure
   interrupts active peers. `steer` queues guidance for the next agent task that
   starts, not a particular currently running task.
+- Workbench writes nothing to AgentTool Collab. `run --collab-context` adds a
+  short Workbench-written block to that invocation's agent prompts: run, task and
+  attempt IDs, harness, a suggested actor label
+  `<harness> · workbench <run8>/<task>#<attempt>` and Collab guidance. It is not
+  saved, so repeat it when continuing or retrying; launch records show
+  `collab_context_included`. A Workbench `succeeded` is a process receipt, never
+  Collab completion or acceptance.
 - Opt into `--adapter duplex` only for Claude/Astra-compatible tasks needing live
   controls. A runtime handshake must succeed before the prompt is sent. Use
   `send RUN TASK TEXT --request-id ID` or `interrupt RUN TASK --request-id ID`

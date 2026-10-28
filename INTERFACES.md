@@ -53,9 +53,20 @@ native session pointers, bounded public events and control receipts.
 
 ## Runner API (`runner.py`)
 
-`run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1) -> dict`
+`run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1, collab_context=False) -> dict`
 executes dependency-ready tasks with 1–16 bounded workers, preserving
-already-succeeded tasks. Its `run_started` event lists
+already-succeeded tasks. `collab_context` (a bool) applies to this invocation
+only: it is held in the live `controller` record, which release clears, and
+recorded as the `run_started` event's `collab_context`. When true, each agent
+attempt's prompt gets a Workbench-written lineage block after the goal and
+before predecessor blocks: run ID (8-character prefix and full), task ID,
+attempt number and ID, harness, the suggested Collab actor label
+`<harness> · workbench <run8>/<task>#<attempt>` and six fixed guidance lines,
+with no paths, prompt text or credentials. Launch evidence (`launch.json` and the
+attempt's `launch` summary) records `collab_context_included` for every attempt;
+command tasks record false. When false, prompts are byte-for-byte unchanged.
+Workbench writes nothing to Collab and adds no manifest, task or handoff field.
+The `run_started` event also lists
 `budgets_beyond_run_timeout(state, timeout_seconds)`: pending tasks whose Hermes
 `run_budget_seconds` is not shorter than the invocation's limit, which would end
 the run before Hermes could wrap up; the CLI also warns about them before running
@@ -411,7 +422,7 @@ workspaces RUN
 workspace-remove RUN TASK ATTEMPT
 timeline RUN [--limit N] [--json]
 plan RUN
-run RUN [--timeout N] [--max-launches N] [--jobs N]
+run RUN [--timeout N] [--max-launches N] [--jobs N] [--collab-context]
 send RUN TASK TEXT [--request-id ID]
 interrupt RUN TASK [--request-id ID]
 pause RUN

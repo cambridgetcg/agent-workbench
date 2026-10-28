@@ -308,11 +308,36 @@ def _workspace_context(task_id, workspace):
             "Nothing was merged or copied into this task's checkout.")
 
 
-def _prompt(state, task, guidance):
+def _collab_context(run_id, task, attempt_id):
+    """Workbench's lineage record for a Collab session the agent may choose to start.
+
+    Workbench writes nothing to the Collab journal; a suggested actor label lets
+    such a session be traced back to this attempt. Identifiers only: no paths,
+    prompt text or credentials. The label is a display convention, not proof of
+    which process started a session.
+    """
+    number = len(task["attempts"])
+    label = f"{task['harness']} · workbench {run_id[:8]}/{task['id']}#{number}"
+    return (f"Workbench run lineage for this attempt, not written by an agent: run {run_id[:8]} (full ID {run_id}), "
+            f"task {task['id']}, attempt {number} (ID {attempt_id}), harness {task['harness']}.\n"
+            f"Suggested Collab actor label: {label}\n"
+            "- Start a Collab session only if this task needs coordination with other sessions; use that label as its actor and end the session before you finish.\n"
+            "- Delegates and sub-agents report through you: they never start a session of their own, and you never pass them yours or its credential.\n"
+            "- Never review or accept your own completion; request review from a distinct session.\n"
+            "- A Workbench \"succeeded\" status is a process receipt, not Collab completion or acceptance.\n"
+            "- Leases expire; renew them during long work.\n"
+            "- Every session and its model provider can read the journal: never copy prompts, secrets or note text into it.")
+
+
+def _prompt(state, task, guidance, lineage=""):
     pieces = [task["prompt"]]
     # A single-task run defaults its goal to the prompt; send that text once.
     if state.get("goal") and state["goal"].strip() != task["prompt"].strip():
         pieces.append("Workflow goal:\n" + state["goal"])
+    if lineage:
+        # Workbench-written, so it precedes predecessor summaries as the
+        # worktree record does: agent-written text cannot precede it.
+        pieces.append(lineage)
     dependencies = set(task.get("depends_on", []))
     for dependency in state["tasks"]:
         if dependency["id"] in dependencies:
@@ -518,7 +543,12 @@ def _begin_attempt(store, run_id, task_id):
             "guidance_count": len(guidance)}
         task["status"] = "running"
         task["attempts"].append(attempt)
-        captured.update(task=dict(task), prompt=_prompt(state, task, guidance) if task["harness"] != "command" else "")
+        # The live controller record carries this invocation's choice; it is
+        # never exported and is cleared when the controller releases the run.
+        collab = task["harness"] != "command" and (state.get("controller") or {}).get("collab_context") is True
+        lineage = _collab_context(run_id, task, attempt_id) if collab else ""
+        captured.update(task=dict(task), prompt=_prompt(state, task, guidance, lineage) if task["harness"] != "command" else "",
+                        collab_context=collab)
         add_event(state, "task_started", task_id=task_id, attempt_id=attempt_id)
     store.update(run_id, begin)
     return attempt_id, directory, captured
@@ -742,9 +772,11 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted, ownership):
                 profile = inspect_launch(task, Path(workspace["path"]), env=environment, update_check=False)
                 profile["native_sandbox"] = native_sandbox(task)
                 profile["host_session_environment_removed"] = removed
+                profile["collab_context_included"] = captured["collab_context"]
                 write_private_json(directory / "launch.json", profile)
                 summary_keys = ("harness", "executable", "resolved_executable", "display_executable", "status", "version",
-                                "native", "capabilities", "warnings", "native_sandbox", "host_session_environment_removed")
+                                "native", "capabilities", "warnings", "native_sandbox", "host_session_environment_removed",
+                                "collab_context_included")
                 def profiled(state):
                     attempt = _task_by_id(state, task_id)["attempts"][-1]
                     attempt["launch"] = {key: profile[key] for key in summary_keys if key in profile}
@@ -899,13 +931,16 @@ def budgets_beyond_run_timeout(state, timeout_seconds):
             and task["run_budget_seconds"] >= timeout_seconds]
 
 
-def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1):
+def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1, collab_context=False):
+    """Run pending tasks. ``collab_context`` adds lineage to this invocation's agent prompts only."""
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be a positive finite number")
     if isinstance(max_launches, bool) or not isinstance(max_launches, int) or max_launches < 1:
         raise ValueError("max_launches must be a positive integer")
     if type(jobs) is not int or not 1 <= jobs <= 16:
         raise ValueError("jobs must be an integer between 1 and 16")
+    if type(collab_context) is not bool:
+        raise ValueError("collab_context must be a boolean")
     with _controller_lock(store, run_id), _signal_state() as interrupted:
         state = store.read(run_id)
         if state.get("controller") or any(task["status"] == "running" for task in state["tasks"]) or state["status"] == "running":
@@ -918,11 +953,13 @@ def run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1
         deadline = time.monotonic() + timeout_seconds
         launches = 0
         def acquire(state):
-            state["controller"] = {"pid": os.getpid(), "started_at": now(), "id": uuid.uuid4().hex}
+            state["controller"] = {"pid": os.getpid(), "started_at": now(), "id": uuid.uuid4().hex,
+                                   "collab_context": collab_context}
             state["status"] = "running"
             state["control"]["pause_requested"] = False
             state["control"]["stop_requested"] = False
             add_event(state, "run_started", timeout_seconds=timeout_seconds, max_launches=max_launches, jobs=jobs,
+                      collab_context=collab_context,
                       budgets_beyond_run_timeout=budgets_beyond_run_timeout(state, timeout_seconds))
         store.update(run_id, acquire)
         try:

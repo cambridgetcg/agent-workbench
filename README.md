@@ -263,6 +263,34 @@ it should accept exactly a clean tree with HEAD on a remote-tracking ref.
 Incomplete checkout preparation also remains recorded for inspection and is
 refused by this cleanup command.
 
+## Trace Collab sessions to a run
+
+Workbench writes nothing to an AgentTool Collab journal. So that a session an
+agent chooses to start can be traced back to its run, opt in per invocation:
+
+```sh
+agent-workbench run RUN_ID --collab-context
+```
+
+Each agent prompt this invocation launches then carries a short Workbench-written
+block after the goal and before any predecessor record: the run ID (first eight
+characters and full), task ID, attempt number and ID, harness, a suggested actor
+label such as `hermes-astra-ultra · workbench 3f9c2a7b/review#2`, and six fixed
+lines of guidance (start a session only to coordinate, and end it; delegates
+report through the agent and never start their own; no self-review; a Workbench
+`succeeded` is a process receipt, not Collab completion or acceptance; renew
+leases on long work; keep prompts, secrets and note text out of the journal). It
+holds no paths, prompt text or credentials. Command tasks get no prompt, so no block.
+
+Like `--timeout`, `--max-launches` and `--jobs`, the option is not saved with
+the run: pass it again when continuing, retrying or resuming. The `run_started`
+event records `collab_context`, and each attempt's launch record states
+`collab_context_included`. Without the option prompts are unchanged; exports and
+handoffs never carry it. The label is a self-declared display name, traceable by
+convention but not proof of which process started a session. The block neither
+starts a session nor grants Collab tools: those come from the harness's own MCP
+configuration (`explain --harness` names the servers).
+
 ## Control and recover
 
 In another terminal:

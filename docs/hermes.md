@@ -129,6 +129,15 @@ listed, and `HERMES_SAFE_MODE` disables them all natively. A custom wrapper that
 sets its own `HERMES_HOME` is not run, so an absent profile there is reported as
 `incomplete`, not as having no servers.
 
+`run RUN_ID --collab-context` gives each Hermes prompt in that invocation its
+run, task and attempt IDs and a suggested Collab actor label such as
+`hermes-astra-ultra · workbench 3f9c2a7b/review#1`; Workbench itself writes
+nothing to Collab. Hermes `delegate_task` children share the parent's MCP server
+process and so any Collab session the parent bound, which is why the block tells
+delegates to report through the parent instead of starting their own session.
+Whether a task can reach Collab at all depends on the profile's MCP servers,
+not on this option.
+
 Success requires process exit zero and exactly one valid native terminal result
 with exit code zero, text and a session identifier. Recoverable individual tool
 errors do not prematurely end a task. When Hermes appends its file-mutation
