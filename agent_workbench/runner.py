@@ -22,7 +22,7 @@ import time
 import uuid
 
 from .processes import host_session_variables, native_environment
-from .store import add_event, now, write_private_json
+from .store import COLLAB_SESSION_ID, add_event, now, write_private_json
 
 
 POLL_SECONDS = 0.05
@@ -319,7 +319,6 @@ def _board_note(state, attempt_id):
     names only the attempt ID: no run ID (the handle for run control), path,
     journal or credential location.
     """
-    from .store import COLLAB_SESSION_ID
     coordination = state.get("coordination") if isinstance(state.get("coordination"), dict) else {}
     if coordination.get("collab") is not True or not attempt_id:
         return ""

@@ -300,7 +300,9 @@ command is started, no session is ended, and no credential file is opened.
   parent_matches (against the run's declared parent, null if none), joined_at,
   ended_at, last_seen_at, label_match and label_exact; each attempt `left_active`
   and `excluded` counts (`outside_window`, `time_unparseable`,
-  `invalid_session_id`, `root_mismatch`). The run view adds the coordination
+  `invalid_session_id`, `root_mismatch`). An attempt is `unavailable` with
+  `attempt_id_invalid`, `attempt_time_unparseable`, `workspace_unrecorded`,
+  `command_task` or its journal's failure. The run view adds the coordination
   block, each journal's basename, `user_version` and `newer_tables`, a
   `journals_differ` warning and `observed_at`. Actor text never appears.
 - `check_parent(harnesses, project, parent_session_id, *, home=None, env=None)`

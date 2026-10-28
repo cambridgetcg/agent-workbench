@@ -59,6 +59,7 @@ _TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 _ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 _STATUS = re.compile(r"[a-z_]{1,32}\Z")
+_ATTEMPT_ID = re.compile(r"[a-f0-9]{32}\Z")
 _FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _VERSION = re.compile(r"\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+][0-9A-Za-z.+-]{1,40})?\Z")
 _COMMIT = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
@@ -581,6 +582,10 @@ def _match_attempt(task, attempt, rows, declared_parent, observed):
     mode = workspace.get("mode") or task.get("workspace", "shared")
     view = {"task_id": task["id"], "attempt_id": attempt_id, "harness": task["harness"], "mode": mode,
             "status": "unavailable", "failure": None}
+    if not isinstance(attempt_id, str) or not _ATTEMPT_ID.fullmatch(attempt_id):
+        # An empty or altered ID would make every actor "end with" it.
+        view["failure"] = "attempt_id_invalid"
+        return view
     started = parse_time(attempt.get("started_at"))
     finished = parse_time(attempt.get("finished_at")) if attempt.get("finished_at") else None
     if started is None or attempt.get("finished_at") and finished is None:
@@ -863,7 +868,8 @@ def format_attribution(view):
     if "journals_differ" in view["warnings"]:
         lines.append("Warning: this run's harnesses use different collab journals.")
     for attempt in view["attempts"]:
-        head = f"  {safe_terminal(attempt['task_id'])} attempt {safe_terminal(attempt['attempt_id'])} ({attempt['harness']}, {attempt['mode']})"
+        head = (f"  {safe_terminal(attempt['task_id'])} attempt {safe_terminal(attempt['attempt_id'])} "
+                f"({safe_terminal(attempt['harness'])}, {safe_terminal(attempt['mode'])})")
         if attempt["status"] != "recorded":
             lines.append(f"{head}: unavailable ({attempt['failure']})")
             continue

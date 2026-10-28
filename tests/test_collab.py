@@ -236,6 +236,11 @@ class AttributionTests(CollabTestCase):
         self.assertEqual([s["id"] for s in running["sessions"]], [session_id(1)])
         self.assertEqual(running["excluded"]["outside_window"], 1)
         self.assertEqual((broken["status"], broken["failure"]), ("unavailable", "attempt_time_unparseable"))
+        # An empty or altered attempt ID must not make every actor match.
+        for ident in ("", None, ATTEMPT.upper()):
+            state = self.run_with([self.attempt(ident)])
+            attempt = collab.attribution(state, home=self.home, env=self.env)["attempts"][0]
+            self.assertEqual((attempt["status"], attempt["failure"]), ("unavailable", "attempt_id_invalid"))
 
     def test_shared_mode_needs_the_exact_attempt_suffix_matched_in_python(self):
         connection = build_journal(self.journal)
