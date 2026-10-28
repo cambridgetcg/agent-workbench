@@ -161,6 +161,19 @@ class HandoffTests(unittest.TestCase):
             handoff.import_handoff(self.store, self.output, self.target_project)
         self.assertEqual(len(self.store.list_runs()), 1)
 
+    def test_session_file_locator_blocks_export_and_withholds_note_context(self):
+        from agent_workbench.runner import _continuity_context
+        locator = "/var/empty/aw/collab-sessions/session_1f.json"
+        state = self.store.update(self.state["id"], lambda state: state["notes"].append(
+            {"kind": "evidence", "text": "resumed " + locator, "at": "2026-10-28T00:00:00Z"}))
+        with self.assertRaises(ValueError) as caught:
+            self.export()
+        self.assertIn("credential-like", str(caught.exception))
+        self.assertNotIn(locator, str(caught.exception))
+        context = _continuity_context(state)
+        self.assertIn("[Note withheld", context)
+        self.assertNotIn(locator, context)
+
     def test_schema_rejections_even_with_recomputed_digest(self):
         original = self.export()
         variants = []

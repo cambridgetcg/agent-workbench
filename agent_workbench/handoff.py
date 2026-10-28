@@ -13,6 +13,7 @@ import re
 import stat
 import unicodedata
 
+from .agenttool import names_collab_session_file
 from .store import TASK_FIELDS, add_event, now, validate_manifest
 
 
@@ -70,7 +71,7 @@ def _integer(value, *, maximum=1_000_000):
 def contains_credential_text(text: str) -> bool:
     """Shared recognizable-credential check for handoffs and automatic context."""
     inspected = re.sub(r"(?i)(?:\[redacted\]|<redacted>)", "", text)
-    return any(pattern.search(inspected) for pattern in SECRET_PATTERNS)
+    return any(pattern.search(inspected) for pattern in SECRET_PATTERNS) or names_collab_session_file(inspected)
 
 
 def _check_secrets(value):

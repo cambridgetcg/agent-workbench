@@ -1,4 +1,4 @@
-# Implementation contract: 0.5.1
+# Implementation contract: 0.6.0
 
 Python package: `agent_workbench/`. Public CLI: `agent-workbench`.
 
@@ -18,7 +18,11 @@ Python package: `agent_workbench/`. Public CLI: `agent-workbench`.
 - `directory(run_id: str) -> Path` returns the private run directory.
 - `list_runs() -> list[dict]` returns snapshots.
 - `validate_manifest(manifest: dict) -> dict` returns normalized copy; validates
-  task IDs, dependencies/cycles, harness settings, and command argv.
+  task IDs, dependencies/cycles, harness settings, and command argv. Command argv
+  that `agenttool.refused_command` names, and any name, goal, prompt or argv that
+  names a Collab session file, are refused here. At launch,
+  `agenttool.launch_refusal` checks the argv and the composed prompt again
+  (failed/launch_error, no process, before workspace preparation).
 - `now() -> str` UTC ISO timestamp.
 - `add_event(state, kind, **fields)` appends a timestamped event.
 
@@ -75,11 +79,16 @@ Codex sandbox flag value or None. `processes.native_environment()` omits the
 launching host session's identity and messaging variables
 (`HOST_SESSION_ENV`, which includes Codex's `CODEX_CI`, `CODEX_SESSION_ID`,
 `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_TOOL_CALL_ID`,
-`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, every `CLAUDE_CODE_MESSAGING_` name, and
+`processes.COLLAB_SESSION_ENV`; `CODEX_HOME`, `AGENTOOL_COLLAB_DB`,
 credentials, `CODEX_SANDBOX*` and Codex's network proxy variables stay) for tasks, plugin
 evaluations and mod checks; a task's launch record lists the removed names.
 Launch inspection passes `update_check=False`, so Hermes's update-checking
-`--version` is not probed during runs.
+`--version` is not probed during runs. A Hermes task with `run_budget_seconds`
+fails at launch when the probed chat help does not list `--run-budget`.
+`redact_summary` withholds Collab session-file locators before its other filters.
+The Hermes file-mutation warning matches both the current ("N file edit(s)
+FAILED") and the older ("N file(s) were NOT modified") footer.
 Each agent prompt receives at most eight recent notes within an 8,000-character
 continuity section, including framing and omission/truncation notices. Notes are
 redacted and quoted as historical data; imported notes are unverified claims.
@@ -236,6 +245,7 @@ read-only allowlisted metadata: versions, auth freshness, selected config values
 with provenance, actual-vs-requested effort, active Astra local proxies. Default
 does not make inference or network calls. Optional probe only configured loopback
 health endpoints, no model calls. Distinguish inferred, configured and observed.
+Includes `agenttool` (see `agenttool.wiring`).
 `format_report(report) -> str`. No token/account-ID/email output.
 
 ## Launch/configuration evidence (`capabilities.py`)
@@ -324,10 +334,56 @@ JSON plus sibling Markdown containing goal, decisions, questions, task statuses
 with their execution settings (`handoff.SUMMARY_SETTINGS`, escaped, with control
 and format characters replaced; prompts and argv stay in JSON), explicit evidence and next steps. No credentials, raw traces or hidden reasoning.
 Include digest to detect accidental modifications, not a signature/trust claim.
+The shared credential check (`contains_credential_text`) also treats Collab
+session-file locators as credential-like.
 `import_handoff(store, source: Path, project: Path) -> dict` validates and creates
 a new local run with provenance. Imported completion claims remain historical;
 new runnable tasks are pending and require explicit execution. No automatic
 subprocess/network/external mutation. Preserve original artifact separately.
+
+## AgentTool neighbour (`agenttool.py`)
+
+Nothing here starts a process, opens a Collab journal or uses the network.
+
+- `refused_command(argv) -> str | None` is a tripwire, not a sandbox or shell
+  parser. It checks top-level words and the parts of any script-like argument,
+  including `NAME=value` and `--option=value` values, for the AgentTool lobby CLI,
+  Collab courier, `collab-zerone ... anchor`, hosted mission prefixes,
+  `agenttool-collab-host ... end` and `api.agenttool.dev/v1/wake`, and any `room`
+  segment with `--lease`. A command led by `grep`, `egrep`, `fgrep`, `git grep` or
+  `git log` in argv[0] (no git global options, no pager option such as `-O`,
+  `-5O<cmd>` or `--open-files-in-pager`, no `--ext-diff`) is data; inside a script
+  only the `NAME=value` words in front of such a search are checked. Package specs
+  (`name@version`, `@agenttool/<name>`) count unless they follow a selector such as
+  `-p`, `--package` or `--filter`. Fails closed.
+- `launch_refusal(task, prompt) -> str | None` returns `Task <id> <reason>`.
+- `names_collab_session_file(text) -> bool` matches, in linear time, a concrete
+  `collab-sessions/<id>.json` locator (any case, also JSON-escaped) or an
+  `AGENTOOL_COLLAB_SESSION_FILE` value that looks like a path (including `$HOME/...`
+  and `${AGENTOOL_COLLAB_SESSION_FILE:-/path}`; a bare `$NAME` is not a path). A
+  `--session-file` or `session_file` value counts only when the same text mentions
+  Collab, because `session_file` is an ordinary identifier.
+  `argv_names_collab_session_file(argv)` also sees `--session-file <path>` as two
+  words (any literal value for `agenttool-collab-host`) and skips plain searches.
+  `withhold_session_files(text) -> str` replaces every such path, a path with
+  spaces whole, with `[Collab session file withheld]`; it is broader than
+  detection, so it errs toward hiding. `handoff.contains_credential_text` uses
+  `names_collab_session_file`; `bridge.request_native` refuses such live input.
+- `wiring(*, home, project, env) -> dict` reports configured (not observed)
+  AgentTool servers for `codex`, `claude`, `hermes` and `hermes-astra-ultra`,
+  classified by endpoint or command; names never values; other servers only
+  counted; suggestions for missing public servers are printed, never applied.
+  Tool filters follow each harness (Codex `disabled_tools` always removes; Hermes
+  uses `tools or {}`, a non-empty `include` wins, and a `tools` value that is not a
+  mapping registers no tools). Hermes `config.yaml` is read with a block-style
+  subset reader of the `mcp_servers` block, resolving plain scalars as PyYAML does,
+  plus a few common whole-file errors; what the subset cannot read is `unparsed`,
+  and absence is claimed only when no top-level key could hide `mcp_servers`. A
+  YAML error elsewhere in the file, which makes Hermes load no MCP servers, may go
+  unnoticed. Servers whose url or command holds `${...}` are `unresolved`; a `url`
+  key that is not an http(s) URL is `unusable_entry`. A section that cannot be
+  read is `unknown` and never stops doctor.
+- `format_lines(section) -> list[str]` renders that section for `format_report`.
 
 ## Read-only views (`views.py`)
 

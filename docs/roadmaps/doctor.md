@@ -4,6 +4,14 @@ Status: v0.3.0 implements launch profiles, partial configuration explanations,
 plugin inventory and bounded native evaluations. No global settings or native
 runtime upgrade is required for these interfaces.
 
+## Implemented: AgentTool tools by harness (0.6.0)
+
+`doctor` reports which public AgentTool MCP servers, Collab and the lobby's
+read-only view Codex, Claude Code and Hermes have configured, recognised by
+endpoint or command, with allowlist fit and copy-ready text for a missing public
+server. It reads configuration files only and reports names, never values. It is
+configured evidence; a running server may differ.
+
 ## Implemented: explain the actual launch
 
 - `doctor` retains local version/auth-freshness metadata and optional loopback
@@ -57,6 +65,9 @@ negotiation when available. Local discovery cannot infer managed policy, trust,
 all setting merges, what a wrapper actually forwards, or what reached a provider.
 A future request capture must keep requested, observed serialized and provider
 accepted values separate without exposing credentials, prompts or reasoning.
+For AgentTool, the observed counterpart of the configured report would be the MCP
+server status Claude reports at session start and per-attempt wiring in
+`launch.json`, without recording tool arguments or results.
 
 Acceptance: a new observation replaces a named uncertainty, and unsupported
 versions retain an honest fallback. No version check alone activates early-access

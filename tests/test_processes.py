@@ -107,6 +107,20 @@ class NativeEnvironmentTests(unittest.TestCase):
         self.assertEqual(host_session_variables(host), ["CODEX_CI", "CODEX_ESCALATE_SOCKET", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
                                                         "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_TOOL_CALL_ID", "CODEX_VERSION"])
 
+    def test_collab_session_bindings_are_removed_but_journal_selection_stays(self):
+        from agent_workbench.processes import host_session_variables, native_environment
+        host = {"AGENTOOL_COLLAB_SESSION_FILE": "/var/empty/aw/s.json", "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY": "1",
+                "AGENTOOL_COLLAB_CLAUDE_PID": "1", "AGENTOOL_COLLAB_DB": ":memory:",
+                "AGENTOOL_COLLAB_ANCHOR_LEDGER": "/var/empty/aw/ledger", "AGENTTOOL_LOBBY_HOME": "/var/empty/aw/lobby",
+                "PATH": "/bin"}
+        self.assertEqual(native_environment(host), {"AGENTOOL_COLLAB_DB": ":memory:",
+                                                    "AGENTOOL_COLLAB_ANCHOR_LEDGER": "/var/empty/aw/ledger",
+                                                    "AGENTTOOL_LOBBY_HOME": "/var/empty/aw/lobby", "PATH": "/bin"})
+        removed = host_session_variables(host)
+        self.assertEqual(removed, ["AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY", "AGENTOOL_COLLAB_CLAUDE_PID",
+                                   "AGENTOOL_COLLAB_SESSION_FILE"])
+        self.assertNotIn("/var/empty/aw/s.json", json.dumps(removed))
+
 
 if __name__ == "__main__":
     unittest.main()

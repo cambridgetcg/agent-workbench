@@ -1,6 +1,6 @@
 ---
 name: agent-workbench
-description: Diagnose Codex, Claude Code, Hermes or Astra configuration; run and control saved workflows; compare local plugin evaluations; or transfer explicit work handoffs. Use for these operations, not ordinary coding tasks.
+description: Diagnose Codex, Claude Code, Hermes or Astra configuration, including which AgentTool tools each has; run and control saved workflows; compare local plugin evaluations; or transfer explicit work handoffs. Use for these operations, not ordinary coding tasks.
 ---
 
 Use the shared `agent-workbench` CLI. If it is not on PATH, execute the bundled
@@ -37,6 +37,20 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   Use the token helper's `--check` interface for auth diagnostics; its normal
   stdout is a private credential protocol and must never be run in a terminal
   or included in logs, prompts or reports. See the [Hermes integration guide](../../docs/hermes.md).
+- AgentTool: Workbench makes no AgentTool call and holds no AgentTool identity;
+  agents use AgentTool through their own harness's MCP tools. `doctor --json` lists
+  the AgentTool servers each harness has configured (configured, not observed) and
+  prints copy-ready fixes for missing public servers; never apply them yourself or
+  edit native configuration. Launches never inherit `AGENTOOL_COLLAB_SESSION_FILE`,
+  `AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY` or `AGENTOOL_COLLAB_CLAUDE_PID`. Command
+  tasks may not run the lobby CLI or any lease send, Collab courier,
+  `collab-zerone anchor`, hosted mission clients, `agenttool-collab-host end` or
+  the personal `/v1/wake`, and no prompt, argv, note or guidance may name a session
+  credential file. For a Collab peer follow docs/agenttool.md: one task per peer,
+  an explicit actor, never self-review, end your own session, a command task
+  verifies, the parent reviews from a different session. Never run lobby
+  commands; hand them to the person to type at a real terminal, and never make,
+  use or suggest a seat lease.
 - Runs are serial by default; `run --jobs N` allows 1–16 workers subject to
   dependencies and checkout ownership. `shared` writers serialize; declared
   `read-only` tasks may overlap. Codex read-only tasks get Codex's read-only

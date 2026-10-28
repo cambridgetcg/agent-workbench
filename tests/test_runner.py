@@ -22,14 +22,22 @@ if "--version" in sys.argv:
     print("vgit.59004a6 (2026.9.24)" if kind.startswith("hermes") else "2.1.282")
     sys.exit(0)
 if "--help" in sys.argv:
-    print("--query-file --format stream-json --reasoning --model --resume" if kind.startswith("hermes") else "--json --output-format stream-json --model --effort")
+    if os.environ.get("WORKBENCH_FAKE_NO_CHAT_HELP") and "chat" in sys.argv:
+        sys.exit(1)
+    hermes_help = "--query-file --format stream-json --reasoning --model --resume --max-turns --skills"
+    if not os.environ.get("WORKBENCH_FAKE_OLDER_HERMES"):
+        hermes_help += " --run-budget"
+    print(hermes_help if kind.startswith("hermes") else "--json --output-format stream-json --model --effort")
     sys.exit(0)
 prompt = sys.stdin.read()
 mode = prompt.splitlines()[0]
 with pathlib.Path("calls.jsonl").open("a") as f:
     f.write(json.dumps({"kind": kind, "argv": sys.argv[1:], "prompt": prompt,
-                        "host_env": sorted(key for key in ("CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID") if key in os.environ),
-                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING")}) + "\n")
+                        "host_env": sorted(key for key in ("CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID",
+                                                           "AGENTOOL_COLLAB_SESSION_FILE", "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY",
+                                                           "AGENTOOL_COLLAB_CLAUDE_PID") if key in os.environ),
+                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING"),
+                        "collab_db": os.environ.get("AGENTOOL_COLLAB_DB")}) + "\n")
 pathlib.Path("started").write_text(str(os.getpid()))
 if mode in {"ARGUMENT_ERROR", "ARGUMENT_ERROR_ZERO", "ARGUMENT_JSON_ERROR"}:
     diagnostic = "error: option '--effort <level>' argument 'xhigh' is invalid. It must be one of: low, medium, high, max; api_key=synthetic-stderr-secret"
@@ -96,6 +104,11 @@ if mode == "SECRET":
 if mode == "MUTATION_FOOTER":
     text = ("All edits applied.\n\n\u26a0\ufe0f File-mutation verifier: 2 file edit(s) FAILED this turn despite any wording above "
             "that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed.\n  \u2022 `a.txt` \u2014 [patch] failed")
+if mode == "OLDER_MUTATION_FOOTER":
+    text = ("All edits applied.\n\n\u26a0\ufe0f File-mutation verifier: 3 file(s) were NOT modified this turn despite any "
+            "wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.\n  \u2022 `a.txt` \u2014 [patch] failed")
+if mode == "SESSION_FILE":
+    text = "session file /var/empty/aw/collab-sessions/session_1f.json done"
 if kind.startswith("hermes"):
     print(json.dumps({"type": "system", "subtype": "init", "session_id": "synthetic-hermes-initial", "model": "private-model"}))
     print(json.dumps({"type": "text", "text": "PRIVATE_DELTA_SENTINEL"}))
@@ -331,7 +344,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_host_session_identity_is_not_inherited_by_native_tasks(self):
         host = {"CLAUDECODE": "1", "CLAUDE_CODE_MESSAGING_TOKEN": "synthetic-host-channel-token",
-                "CLAUDE_CODE_SESSION_ID": "host-session", "CLAUDE_PID": "1", "WORKBENCH_KEPT_SETTING": "kept"}
+                "CLAUDE_CODE_SESSION_ID": "host-session", "CLAUDE_PID": "1", "WORKBENCH_KEPT_SETTING": "kept",
+                "AGENTOOL_COLLAB_SESSION_FILE": "/var/empty/aw-sentinel/s.json", "AGENTOOL_COLLAB_CLAUDE_PID": "1",
+                "AGENTOOL_COLLAB_DB": ":memory:"}
         with patch.dict(os.environ, host):
             run_id = self.create([self.agent("codex", "codex"), self.agent("hermes", "hermes", depends_on=["codex"])])
             state = run_workflow(self.store, run_id)
@@ -339,9 +354,13 @@ class RunnerTests(unittest.TestCase):
         for call in self.calls():
             self.assertEqual(call["host_env"], [])
             self.assertEqual(call["kept_env"], "kept")
+            self.assertEqual(call["collab_db"], ":memory:")
         launch = state["tasks"][0]["attempts"][0]["launch"]
-        self.assertIn("CLAUDE_CODE_MESSAGING_TOKEN", launch["host_session_environment_removed"])
+        for name in ("CLAUDE_CODE_MESSAGING_TOKEN", "AGENTOOL_COLLAB_SESSION_FILE", "AGENTOOL_COLLAB_CLAUDE_PID"):
+            self.assertIn(name, launch["host_session_environment_removed"])
+        self.assertNotIn("AGENTOOL_COLLAB_DB", launch["host_session_environment_removed"])
         self.assertNotIn("synthetic-host-channel-token", json.dumps(state))
+        self.assertNotIn("aw-sentinel", json.dumps(state))
 
     def test_hermes_file_mutation_footer_is_a_warning_not_clean_success(self):
         state = run_workflow(self.store, self.create([self.agent("edit", "hermes", prompt="MUTATION_FOOTER")]))
@@ -349,6 +368,88 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual(result["warning_count"], 1)
         self.assertIn("2 failed file edit(s)", result["warnings"][0])
+
+    def test_older_hermes_file_mutation_footer_is_also_a_warning(self):
+        state = run_workflow(self.store, self.create([self.agent("edit", "hermes", prompt="OLDER_MUTATION_FOOTER")]))
+        result = state["tasks"][0]["result"]
+        self.assertEqual(state["status"], "succeeded")
+        self.assertEqual(result["warning_count"], 1)
+        self.assertIn("3 failed file edit(s)", result["warnings"][0])
+
+    def test_older_hermes_without_run_budget_refuses_the_budget_before_any_turn(self):
+        with patch.dict(os.environ, {"WORKBENCH_FAKE_OLDER_HERMES": "1"}):
+            budget = run_workflow(self.store, self.create([self.agent("budget", "hermes", run_budget_seconds=60,
+                                                                      timeout_seconds=120)]))["tasks"][0]
+            plain = run_workflow(self.store, self.create([self.agent("plain", "hermes", max_turns=5)]))["tasks"][0]
+        self.assertEqual(budget["status"], "failed")
+        self.assertEqual(budget["result"]["failure_kind"], "launch_error")
+        self.assertIn("--run-budget", budget["result"]["summary"])
+        self.assertIsNone(budget["attempts"][0].get("pid"))
+        self.assertEqual(plain["status"], "succeeded")
+        self.assertEqual([call["argv"][-2:] for call in self.calls()], [["--max-turns", "5"]])
+
+    def test_saved_runs_refuse_lobby_commands_and_session_file_prompts_at_launch(self):
+        marker = self.root / "lobby-ran"
+        lobby = self.binaries / "agenttool-lobby"
+        lobby.write_text("#!/bin/sh\ntouch " + str(marker) + "\n")
+        lobby.chmod(0o755)
+        run_id = self.create([{"id": "notify", "harness": "command", "argv": ["true"]}])
+        self.store.update(run_id, lambda state: state["tasks"][0].update(argv=[str(lobby), "room", "list"]))
+        state = run_workflow(self.store, run_id)
+        task = state["tasks"][0]
+        self.assertEqual(task["status"], "failed")
+        self.assertEqual(task["result"]["failure_kind"], "launch_error")
+        self.assertIsNone(task["attempts"][0].get("pid"))
+        self.assertTrue(task["result"]["summary"].startswith("Task notify runs the AgentTool lobby CLI"))
+        self.assertFalse(marker.exists())
+
+        locator = "/var/empty/aw/collab-sessions/s.json"
+        run_id = self.create([self.agent("peer", "codex")])
+        self.store.update(run_id, lambda state: state["tasks"][0].update(prompt="SUCCESS\nresume " + locator))
+        state = run_workflow(self.store, run_id)
+        task = state["tasks"][0]
+        self.assertEqual(task["result"]["failure_kind"], "launch_error")
+        self.assertEqual(self.calls(), [])
+        stdin = next(self.store.directory(run_id).rglob("stdin.txt"))
+        self.assertEqual(stdin.read_bytes(), b"")
+        self.assertNotIn(locator, json.dumps(state["tasks"][0]["result"]))
+
+    def test_summaries_saved_before_withholding_are_withheld_in_the_next_prompt(self):
+        run_id = self.create([self.agent("peer", "codex"), self.agent("next", "codex", depends_on=["peer"])])
+        def finished_on_an_older_version(state):
+            peer = state["tasks"][0]
+            peer.update(status="succeeded", result={"summary": "resumed /var/empty/old/collab-sessions/s1.json fine"})
+        self.store.update(run_id, finished_on_an_older_version)
+        state = run_workflow(self.store, run_id)
+        self.assertEqual(state["tasks"][1]["status"], "succeeded")
+        prompt = self.calls()[0]["prompt"]
+        self.assertIn("[Collab session file withheld]", prompt)
+        self.assertNotIn("/var/empty/old/collab-sessions", prompt)
+
+    def test_refusal_comes_before_workspace_preparation_and_cli_probing(self):
+        run_id = self.create([{"id": "notify", "harness": "command", "argv": ["true"]}])
+        self.store.update(run_id, lambda state: state["tasks"][0].update(argv=["agenttool-lobby", "room", "list"]))
+        with patch("agent_workbench.workspaces.prepare", side_effect=AssertionError("prepared")), \
+                patch("agent_workbench.capabilities.inspect_launch", side_effect=AssertionError("probed")):
+            task = run_workflow(self.store, run_id)["tasks"][0]
+        self.assertEqual(task["result"]["failure_kind"], "launch_error")
+        self.assertTrue(task["result"]["summary"].startswith("Task notify runs the AgentTool lobby CLI"))
+
+    def test_run_budget_is_passed_when_chat_help_could_not_be_read(self):
+        with patch.dict(os.environ, {"WORKBENCH_FAKE_OLDER_HERMES": "1", "WORKBENCH_FAKE_NO_CHAT_HELP": "1"}):
+            state = run_workflow(self.store, self.create([self.agent("budget", "hermes", run_budget_seconds=60,
+                                                                     timeout_seconds=120)]))
+        self.assertEqual(state["tasks"][0]["status"], "succeeded")
+        self.assertEqual(self.calls()[0]["argv"][-2:], ["--run-budget", "60"])
+
+    def test_predecessor_summary_withholds_collab_session_file_path(self):
+        run_id = self.create([self.agent("peer", "hermes", prompt="SESSION_FILE"),
+                              self.agent("next", "codex", depends_on=["peer"])])
+        state = run_workflow(self.store, run_id)
+        self.assertEqual(state["status"], "succeeded")
+        self.assertIn("[Collab session file withheld]", state["tasks"][0]["result"]["summary"])
+        self.assertNotIn("/var/empty/aw/collab-sessions", self.calls()[1]["prompt"])
+        self.assertNotIn("/var/empty/aw/collab-sessions", json.dumps(state))
 
     def test_launch_profile_skips_hermes_update_checking_version_probe(self):
         state = run_workflow(self.store, self.create([self.agent("hermes", "hermes"), self.agent("codex", "codex", depends_on=["hermes"])]))
