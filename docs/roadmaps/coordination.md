@@ -1,7 +1,8 @@
 # Coordination with agenttool
 
 Status: v0.6.0 adds attribution and observation of agenttool coordination, built
-against the installed collab 0.5.0 and lobby `ac1830bc`. Workbench is not an MCP
+against the installed collab 0.5.0 and the lobby as installed on 2026-10-28
+(source `68044b45`, which replaced `ac1830bc` that day). Workbench is not an MCP
 client: children reach the collab board and the read-only lobby tools through
 their own harness registrations, as before.
 

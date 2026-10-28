@@ -24,10 +24,10 @@ its history and cached prompt assumptions.
 
 The installed macOS profile also loads a profile-local
 `terminal.shell_init_files` script into its terminals. In this order, it puts the
-profile's own `bin` directory first on PATH (which pins only the native Claude
-launcher for this profile; other launchers keep their existing order), then
-Homebrew's `bin` and `sbin`, ahead of the inherited PATH, and sets `LANG` and
-`LC_ALL` to a UTF-8 locale. Homebrew's Python therefore precedes the system
+profile's own `bin` directory first on PATH (it holds this profile's own `claude`
+and `hermes` launchers, so both are pinned; other launchers keep their existing
+order), then Homebrew's `bin` and `sbin`, ahead of the inherited PATH, and sets
+`LANG` and `LC_ALL` to a UTF-8 locale. Homebrew's Python therefore precedes the system
 Python 3.9, which fixes that selection and the startup warnings that otherwise
 contaminated native file-tool output. Global shell files are unchanged. The
 fresh native terminal, filename/content search, write, patch and checksum paths
