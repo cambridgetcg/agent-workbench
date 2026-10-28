@@ -29,7 +29,8 @@ mode = prompt.splitlines()[0]
 with pathlib.Path("calls.jsonl").open("a") as f:
     f.write(json.dumps({"kind": kind, "argv": sys.argv[1:], "prompt": prompt,
                         "host_env": sorted(key for key in ("CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID") if key in os.environ),
-                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING")}) + "\n")
+                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING"),
+                        "marker": {key: os.environ.get(key) for key in ("AGENT_WORKBENCH_ATTEMPT", "AGENT_WORKBENCH_STATE_ROOT")}}) + "\n")
 pathlib.Path("started").write_text(str(os.getpid()))
 if mode in {"ARGUMENT_ERROR", "ARGUMENT_ERROR_ZERO", "ARGUMENT_JSON_ERROR"}:
     diagnostic = "error: option '--effort <level>' argument 'xhigh' is invalid. It must be one of: low, medium, high, max; api_key=synthetic-stderr-secret"
@@ -412,6 +413,21 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(state["tasks"][0]["result"]["summary"].startswith("1 agent-workbench: inside_workbench_child"))
         self.assertEqual(state["control"]["guidance"], [])
         self.assertNotIn("guidance_queued", [event["kind"] for event in state["events"]])
+
+    def test_native_children_carry_the_workbench_marker_over_inherited_values(self):
+        inherited = {"AGENT_WORKBENCH_ATTEMPT": "f" * 32, "AGENT_WORKBENCH_STATE_ROOT": str(self.root / "outer-state")}
+        with patch.dict(os.environ, inherited):
+            run_id = self.create([self.agent("codex", "codex"), self.agent("hermes", "hermes", depends_on=["codex"]),
+                                  self.agent("claude", "claude", depends_on=["hermes"])])
+            state = run_workflow(self.store, run_id)
+        self.assertEqual(state["status"], "succeeded")
+        attempts = {task["id"]: task["attempts"][0]["id"] for task in state["tasks"]}
+        calls = self.calls()
+        self.assertEqual([call["kind"] for call in calls], ["codex", "hermes", "claude"])
+        for call in calls:
+            with self.subTest(harness=call["kind"]):
+                self.assertEqual(call["marker"], {"AGENT_WORKBENCH_ATTEMPT": attempts[call["kind"]],
+                                                  "AGENT_WORKBENCH_STATE_ROOT": str(self.store.root)})
 
     def test_collab_binding_and_terminal_cwd_are_not_inherited_and_are_listed_in_launch_json(self):
         host = {"AGENTOOL_COLLAB_SESSION_FILE": "/synthetic/private-session.json", "AGENTTOOL_COLLAB_SEAT_REF": "seat",
