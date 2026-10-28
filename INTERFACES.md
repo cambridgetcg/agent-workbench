@@ -79,7 +79,8 @@ launching host session's identity and messaging variables
 `AGENTOOL_COLLAB_SESSION_FILE`, `AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY` and
 `AGENTOOL_COLLAB_CLAUDE_PID`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
 credentials, `CODEX_SANDBOX*`, Codex's network proxy variables and `AGENTOOL_COLLAB_DB` stay) for tasks, plugin
-evaluations and mod checks; a task's launch record lists the removed names.
+evaluations, mod checks and Workbench's Git helpers (whose hooks are repository
+code); a task's launch record lists the removed names.
 Launch inspection passes `update_check=False`, so Hermes's update-checking
 `--version` is not probed during runs.
 Each agent prompt receives at most eight recent notes within an 8,000-character

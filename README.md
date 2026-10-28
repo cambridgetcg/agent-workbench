@@ -154,7 +154,8 @@ every `CLAUDE_CODE_MESSAGING_` variable, and Codex's `CODEX_CI`,
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, and AgentTool
 Collab's `AGENTOOL_COLLAB_SESSION_FILE`, `AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY`
 and `AGENTOOL_COLLAB_CLAUDE_PID` (a child resuming the host's session file would
-fence the host). `AGENTOOL_COLLAB_DB` only selects the journal and is kept. Other environment variables, including API
+fence the host). `AGENTOOL_COLLAB_DB` only selects the journal and is kept. Git
+hooks run while Workbench prepares or inspects a worktree do not inherit them either. Other environment variables, including API
 keys, are inherited; a task's launch record lists the removed names. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise
