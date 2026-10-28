@@ -28,8 +28,11 @@ prompt = sys.stdin.read()
 mode = prompt.splitlines()[0]
 with pathlib.Path("calls.jsonl").open("a") as f:
     f.write(json.dumps({"kind": kind, "argv": sys.argv[1:], "prompt": prompt,
-                        "host_env": sorted(key for key in ("CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID") if key in os.environ),
-                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING")}) + "\n")
+                        "host_env": sorted(key for key in ("CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID",
+                                                           "AGENTOOL_COLLAB_SESSION_FILE", "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY",
+                                                           "AGENTOOL_COLLAB_CLAUDE_PID") if key in os.environ),
+                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING"),
+                        "collab_db": os.environ.get("AGENTOOL_COLLAB_DB")}) + "\n")
 pathlib.Path("started").write_text(str(os.getpid()))
 if mode in {"ARGUMENT_ERROR", "ARGUMENT_ERROR_ZERO", "ARGUMENT_JSON_ERROR"}:
     diagnostic = "error: option '--effort <level>' argument 'xhigh' is invalid. It must be one of: low, medium, high, max; api_key=synthetic-stderr-secret"
@@ -331,7 +334,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_host_session_identity_is_not_inherited_by_native_tasks(self):
         host = {"CLAUDECODE": "1", "CLAUDE_CODE_MESSAGING_TOKEN": "synthetic-host-channel-token",
-                "CLAUDE_CODE_SESSION_ID": "host-session", "CLAUDE_PID": "1", "WORKBENCH_KEPT_SETTING": "kept"}
+                "CLAUDE_CODE_SESSION_ID": "host-session", "CLAUDE_PID": "1", "WORKBENCH_KEPT_SETTING": "kept",
+                "AGENTOOL_COLLAB_SESSION_FILE": "/var/empty/aw-sentinel/s.json", "AGENTOOL_COLLAB_CLAUDE_PID": "1",
+                "AGENTOOL_COLLAB_DB": ":memory:"}
         with patch.dict(os.environ, host):
             run_id = self.create([self.agent("codex", "codex"), self.agent("hermes", "hermes", depends_on=["codex"])])
             state = run_workflow(self.store, run_id)
@@ -339,9 +344,13 @@ class RunnerTests(unittest.TestCase):
         for call in self.calls():
             self.assertEqual(call["host_env"], [])
             self.assertEqual(call["kept_env"], "kept")
+            self.assertEqual(call["collab_db"], ":memory:")
         launch = state["tasks"][0]["attempts"][0]["launch"]
-        self.assertIn("CLAUDE_CODE_MESSAGING_TOKEN", launch["host_session_environment_removed"])
+        for name in ("CLAUDE_CODE_MESSAGING_TOKEN", "AGENTOOL_COLLAB_SESSION_FILE", "AGENTOOL_COLLAB_CLAUDE_PID"):
+            self.assertIn(name, launch["host_session_environment_removed"])
+        self.assertNotIn("AGENTOOL_COLLAB_DB", launch["host_session_environment_removed"])
         self.assertNotIn("synthetic-host-channel-token", json.dumps(state))
+        self.assertNotIn("aw-sentinel", json.dumps(state))
 
     def test_hermes_file_mutation_footer_is_a_warning_not_clean_success(self):
         state = run_workflow(self.store, self.create([self.agent("edit", "hermes", prompt="MUTATION_FOOTER")]))

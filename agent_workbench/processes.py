@@ -25,11 +25,16 @@ import time
 # back to the parent). A native
 # launch is a separate session, so these are never inherited. CODEX_SANDBOX* and
 # the network proxy variables stay: a sandbox does bind the processes inside it.
+# AgentTool Collab's session file, cursor-recovery flag and Claude attribution bind
+# the host's coordination session; a child that resumed it would fence the host.
+# AGENTOOL_COLLAB_DB stays: it selects a journal, as CODEX_HOME selects a home.
+COLLAB_SESSION_ENV = ("AGENTOOL_COLLAB_SESSION_FILE", "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY",
+                      "AGENTOOL_COLLAB_CLAUDE_PID")
 HOST_SESSION_ENV = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
                     "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
                     "CLAUDE_PID", "CLAUDE_EFFORT",
                     "CODEX_CI", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_VERSION", "CODEX_TOOL_CALL_ID",
-                    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_ESCALATE_SOCKET")
+                    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_ESCALATE_SOCKET") + COLLAB_SESSION_ENV
 HOST_SESSION_PREFIXES = ("CLAUDE_CODE_MESSAGING_",)
 
 
