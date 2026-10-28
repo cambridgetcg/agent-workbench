@@ -62,7 +62,7 @@ Configured effort is labeled separately from observed request behavior.
 Each version includes its selected executable. If multiple CLI installations
 exist, check that path: a shell may select an older installation with different
 effort support. Its `agenttool` section checks collab and lobby registrations
-offline (see [Coordinate through agenttool](#coordinate-through-agenttool)).
+offline (see [Coordination with agenttool](#coordination-with-agenttool)).
 
 `explain` shows selected configuration sources, scalar candidates, instruction
 file presence, hook/permission counts and plugin registration/cache/source
@@ -432,7 +432,7 @@ Private state defaults to `~/.local/state/agent-workbench`. Override it with
 `--state-dir PATH` or `AGENT_WORKBENCH_STATE_DIR` for isolated tests. Run logs
 contain task content and stay local with owner-only permissions.
 
-## Coordinate through agenttool
+## Coordination with agenttool
 
 Workbench children already reach agenttool's collab board and read-only lobby
 MCP tools through their own harness registrations (Claude Code's

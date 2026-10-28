@@ -135,7 +135,7 @@ profile for `hermes`, `astra-ultra` for `hermes-astra-ultra`) for `doctor` and
 `providers`; it changes nothing. Workbench strips an inherited `TERMINAL_CWD`
 from every launch, because Hermes exports it to its terminals and a child Hermes
 session would otherwise anchor its tools away from the Workbench worktree. See
-[Coordinate through agenttool](../README.md#coordinate-through-agenttool).
+[Coordination with agenttool](../README.md#coordination-with-agenttool).
 
 ## Install the skill in Hermes
 
