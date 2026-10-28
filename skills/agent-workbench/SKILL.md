@@ -55,6 +55,12 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   drains active tasks; `stop` terminates owned active process groups. Failure
   interrupts active peers. `steer` queues guidance for the next agent task that
   starts, not a particular currently running task.
+- `create --collab` (or `--collab-parent SESSION_ID`) gives agent attempts a
+  collab board note; `collab RUN` lists their sessions read-only, never ending
+  them. `run`, `retry`, `recover`, `stop`, `pause`, `steer`, `send`, `interrupt`,
+  `workspace-remove` and `eval-run` are for the person or the launching host
+  session, never for a Workbench-launched agent; inside one they refuse, and some
+  agent profiles deny them, so report the need instead.
 - Opt into `--adapter duplex` only for Claude/Astra-compatible tasks needing live
   controls. A runtime handshake must succeed before the prompt is sent. Use
   `send RUN TASK TEXT --request-id ID` or `interrupt RUN TASK --request-id ID`

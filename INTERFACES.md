@@ -7,8 +7,12 @@ Python package: `agent_workbench/`. Public CLI: `agent-workbench`.
 `Store(root: Path | None = None)` defaults to `AGENT_WORKBENCH_STATE_DIR` or
 `~/.local/state/agent-workbench`.
 
-- `create(manifest: dict, project: Path) -> dict` validates the manifest and
-  creates a private run. Project must exist. Returns full state.
+- `create(manifest: dict, project: Path, *, coordination: dict | None = None) -> dict`
+  validates the manifest and creates a private run. Project must exist. Returns
+  full state. `coordination` (validated by `validate_coordination`) is the
+  run-level collab opt-in `{collab: true, parent_session_id: str|null,
+  parent_check: null|"matched"|"unavailable"}` (a check exactly when a parent is
+  set), saved as `state["coordination"]` beside the manifest, never in it.
 - `read(run_id: str) -> dict` reads an atomic snapshot.
 - `resolve_run_id(reference: str) -> str` resolves a full run ID or unique
   lowercase hexadecimal prefix of at least eight characters. Reject missing or
@@ -42,6 +46,9 @@ State: `{version:1, id, name, goal, project, created_at, updated_at, revision,
 status:'ready', tasks:[...], events:[], notes:[], control:{stop_requested:false,
 pause_requested:false, guidance:[]}, controller:null}`. Tasks retain their
 manifest fields and add `status:'pending', attempts:[], result:null`.
+A run created with `--collab` adds `coordination` (see `create`); export copies
+only manifest fields and `TASK_FIELDS`, and import calls `create` without it, so
+the opt-in is never exported or imported.
 Task states: pending, running, succeeded, failed, cancelled, interrupted.
 Run states: ready, running, paused, stopped, succeeded, failed, interrupted.
 Attempt metadata is extensible but must distinguish exit/failure/cancellation.
@@ -68,7 +75,11 @@ signal. A busy checkout pauses with `workspace_busy`, without an attempt or retr
 Stopping terminates owned active subprocess groups. Guidance applies to the next
 agent task that starts and is explicitly not in-flight native steering.
 Agent prompts include the workflow goal only when it differs from the task
-prompt. A successor's predecessor block adds Workbench's recorded worktree
+prompt. In a run with `coordination.collab`, every agent attempt's prompt then
+carries Workbench's board note (`_board_note`, named for the attempt ID only, with
+no run ID, path, journal or credential location) directly after the prompt and
+goal, before predecessor records and results, continuity notes and guidance; a
+declared parent adds its lineage-only clause. A successor's predecessor block adds Workbench's recorded worktree
 evidence as a separate Workbench-labelled block before the untrusted predecessor
 summary, or says that evidence is unavailable. `native_sandbox(task)` returns the
 Codex sandbox flag value or None. `processes.native_environment()` omits the
@@ -85,7 +96,9 @@ strip matters for Claude and Astra children, whose MCP servers may inherit the
 environment; Hermes gives MCP servers a safe baseline plus their own `env` block, and
 Codex a whitelist.
 Launch inspection passes `update_check=False`, so Hermes's update-checking
-`--version` is not probed during runs.
+`--version` is not probed during runs. Every task launch (agent or command) sets
+`AGENT_WORKBENCH_ATTEMPT=<attempt_id>` and `AGENT_WORKBENCH_STATE_ROOT=<store root>`,
+overwriting inherited values; see the CLI's `inside_workbench_child` refusal.
 Each agent prompt receives at most eight recent notes within an 8,000-character
 continuity section, including framing and omission/truncation notices. Notes are
 redacted and quoted as historical data; imported notes are unverified claims.
@@ -234,6 +247,70 @@ bounded receive backlog is parsed between complete frames so callback responses
 cannot interleave with an outgoing JSON frame. Final process-event draining
 stops inherited writers first and continues checking run boundaries.
 
+## Collab attribution (`collab.py`)
+
+Read-only; Workbench is not a collab client. No MCP server, host command or lobby
+command is started, no session is ended, and no credential file is opened.
+
+- `registrations(harness, *, home=None, env=None)` and `resolve_journal(harness,
+  *, home=None, env=None)` read the harness's own registration, never collab's
+  default path: `claude`, `astra` and `astra-ultra` read `mcpServers` in
+  `$CLAUDE_CONFIG_DIR/.claude.json` (claude only, when set) or `~/.claude.json`;
+  `codex` reads `mcp_servers` in `$CODEX_HOME/config.toml` (default `~/.codex`);
+  `hermes` reads the profile named in `$HERMES_HOME/active_profile` (default
+  `~/.hermes`; absent or `default` means the root `config.yaml`) and
+  `hermes-astra-ultra` the `astra-ultra` profile, through `hermes_mcp_servers`, a
+  scanner of the column-0 `mcp_servers:` block only (stopping at the next column-0
+  key; `providers` is never read) that keeps `command`, block-list `args` and
+  block-mapping `env` and reports flow style, anchors, aliases, tags, merge keys
+  and tabs as unparsed. A collab entry's args name `agenttool-collab-mcp` (or, for
+  Hermes, its name is `agenttool`); the lobby's name is `agenttool-lobby`. The
+  journal is the entries' absolute `env.AGENTOOL_COLLAB_DB`. Entries that disagree,
+  a missing location beside a set one, or a Workbench `AGENTOOL_COLLAB_DB` that
+  differs (after `os.path.realpath`) give `journal_ambiguous`; no location gives
+  `journal_unconfigured`. Other failures: `collab_not_registered`,
+  `registration_unreadable`, `registration_unparsed`, `journal_path_not_absolute`,
+  `hermes_profile_invalid`. Results carry private paths; callers expose none.
+- `read_journal(path, reader=None)` requires `lstat` to show a regular file,
+  a 16-byte `O_RDONLY|O_NOFOLLOW` header read of `SQLite format 3\0`
+  (`journal_not_sqlite`), then opens `Path(realpath).as_uri() + "?mode=ro"` with
+  `uri=True`, `timeout=2` and `PRAGMA query_only=1`, never `immutable=1`. One short
+  read transaction checks `PRAGMA application_id` = 1096041292
+  (`journal_not_collab`), records `user_version`, requires the columns it selects
+  (`coordination_sessions`: id, workspace_id, worktree_id, actor,
+  parent_session_id, status, joined_at, last_seen_at, ended_at; `worktrees`: id,
+  root_path; `workspaces`: id, repository_key; else `journal_schema_unknown`),
+  reports `newer_tables` when collab 0.5.1's `repository_aliases`,
+  `repository_discovery` or `session_lease_lapses` exist, runs the reader, and
+  closes. It never selects `token_hash` or cursor columns. A read-only open can
+  still create empty mode-0600 `-wal`/`-shm` sidecars beside a WAL journal.
+- `attribution(state, *, home=None, env=None) -> dict` is computed live for any
+  run and writes nothing. Times are parsed with `datetime.fromisoformat` after
+  mapping a trailing `Z` to `+00:00` (collab writes milliseconds and `Z`;
+  Workbench microseconds, `+00:00`, and no fraction at zero), never compared as
+  strings; the window runs from `started_at` floored to milliseconds through
+  `finished_at` plus 5 seconds, or now while unfinished. A worktree attempt matches
+  sessions whose `worktrees.root_path` equals `os.path.realpath` of its recorded
+  owned root and whose `joined_at` is in the window; `label_match` (the actor ends
+  with the attempt ID) and `label_exact` (it ends with ` · workbench job
+  <attempt_id>`) are reported, not required. Shared and read-only attempts need
+  the actor to end with the attempt ID, checked in Python, never SQL `LIKE`.
+  Session IDs are validated; at most 20 sessions per attempt (`truncated`,
+  `session_count`). Each session reports id, status, parent_session_id,
+  parent_matches (against the run's declared parent, null if none), joined_at,
+  ended_at, last_seen_at, label_match and label_exact; each attempt `left_active`
+  and `excluded` counts (`outside_window`, `time_unparseable`,
+  `invalid_session_id`, `root_mismatch`). The run view adds the coordination
+  block, each journal's basename, `user_version` and `newer_tables`, a
+  `journals_differ` warning and `observed_at`. Actor text never appears.
+- `check_parent(harnesses, project, parent_session_id, *, home=None, env=None)`
+  returns `matched` or `unavailable`, or refuses with `collab_parent_not_found` or
+  `collab_parent_other_repository`. `repository_key(project)` is collab's rule:
+  `"local-git:" + sha256(realpath(git rev-parse --path-format=absolute
+  --git-common-dir))`; a key in another scheme is not a definite mismatch.
+- `agenttool_report(*, home=None, env=None)` is doctor's section; `format_attribution`
+  and `format_agenttool` render text without paths, arguments, env values or actor text.
+
 ## Doctor API (`doctor.py`)
 
 `diagnose(*, project: Path | None = None, home: Path | None = None,
@@ -242,7 +319,17 @@ read-only allowlisted metadata: versions, auth freshness, selected config values
 with provenance, actual-vs-requested effort, active Astra local proxies. Default
 does not make inference or network calls. Optional probe only configured loopback
 health endpoints, no model calls. Distinguish inferred, configured and observed.
-`format_report(report) -> str`. No token/account-ID/email output.
+`format_report(report) -> str`. No token/account-ID/email output. Version and
+listener probes pass `stdin=DEVNULL`. The `agenttool` section reports, per
+harness, from `collab.py`'s resolver: collab registered, sanitized registration
+names, env key names, whether `AGENTOOL_COLLAB_DB` is configured, the journal kind
+(`sqlite_collab`, `sqlite_other`, `not_sqlite`, `missing`, `not_regular`,
+`unreadable`, or `unresolved` with its failure), `application_id_ok`,
+`user_version`, `newer_tables`, each bundle's version from the `package.json`
+beside it, `versions_differ` and `journals_equal` (booleans); for Claude and Codex
+the lobby registration, whether its `AGENTTOOL_LOBBY_HOME` exists (stat only;
+nothing inside is opened) and the source commit from an `INSTALL-RECEIPT.json`
+beside the registered package. Never a command, argument, path or env value.
 
 ## Launch/configuration evidence (`capabilities.py`)
 
@@ -346,9 +433,14 @@ entries in chronological order, a total count and a truncation flag. Selected
 event fields are enriched with matching attempt metadata; attempts missing event
 records still appear. Allowlisted scalar fields exclude prompts, note/guidance
 text, log paths and raw output. Neither view runs tasks or resumes native sessions.
-Selected numeric usage is retained. `metadata_view(state) -> dict` is the optional
-frontend's smaller contract: run/task states, task IDs/harnesses, attempt counts
-and queue counts, without goals, summaries, notes, paths or logs.
+Selected numeric usage is retained. Claude tool names starting
+`mcp__agenttool-collab__collab_` and `mcp__agenttool-lobby__`, and Hermes names
+starting `mcp__agenttool__collab_`, become `Collab` and `Lobby` (fixed constants,
+no server name or tool suffix); Codex MCP calls stay `MCP`.
+`metadata_view(state) -> dict` is the optional
+frontend's smaller contract: run/task states, task IDs/harnesses, attempt counts,
+queue counts and `coordination` (collab, parent_set and the parent session ID, a
+local pointer), without goals, summaries, notes, paths or logs.
 
 ## CLI (`cli.py`)
 
@@ -361,12 +453,14 @@ create --harness codex|claude|astra|astra-ultra|hermes|hermes-astra-ultra (--pro
        [--adapter process|duplex] [--workspace shared|read-only|worktree] [--base-ref REF]
        [--sandbox read-only|workspace-write|danger-full-access] [--max-turns N]
        [--skill NAME]... [--run-budget SECONDS] [--timeout-seconds SECONDS]
+create ... [--collab | --collab-parent SESSION_ID]
 list [--project PATH] [--json]
 status RUN [--json] [--metadata]
 launch RUN TASK [--attempt ATTEMPT]
 workspaces RUN
 workspace-remove RUN TASK ATTEMPT
 timeline RUN [--limit N] [--json]
+collab RUN [--json]
 plan RUN
 run RUN [--timeout N] [--max-launches N] [--jobs N]
 send RUN TASK TEXT [--request-id ID]
@@ -389,7 +483,10 @@ mod-check PLUGIN [--executable PATH] [--enable-function-hooks] [--test]
 ```
 
 Creation takes a JSON manifest file (`-` for stdin) or single-task options, never
-both. The single-task form requires an explicit harness and prompt, assigns task
+both. `--collab` and `--collab-parent SESSION_ID` (which implies `--collab`; the ID
+must fullmatch `session_` plus a lowercase UUID) combine with either and set the
+run's `coordination`; a parent is checked with `collab.check_parent` before
+anything is saved. The single-task form requires an explicit harness and prompt, assigns task
 ID `work`, and derives the run name from its first line, capped at 160 characters.
 The goal defaults to the prompt up to 20,000 characters, or to the run name for
 longer prompts. Explicit `--goal` wins; the task prompt is preserved. All creation
@@ -397,6 +494,17 @@ paths use the shared manifest validator and save an
 unstarted run. `--project` defaults to the current directory for create/doctor;
 import still requires it explicitly. Manifest input is bounded at 2,000,000 bytes;
 prompt-file input at 400,000 bytes, followed by normal text validation.
+
+`run`, `retry`, `recover`, `stop`, `pause`, `steer`, `send`, `interrupt`,
+`workspace-remove`, `eval-run` and `create --collab-parent` refuse with
+`inside_workbench_child` when `AGENT_WORKBENCH_ATTEMPT` and
+`AGENT_WORKBENCH_STATE_ROOT` are both set and the latter's realpath is the state
+root this invocation would use. This is a speed bump against a Workbench-launched
+agent steering its own run, not a security boundary: a process can unset the
+variables. Read-only commands, `note` and other creates stay allowed, and a child
+using another state root is unaffected. `plan` and `status` include the
+`coordination` block; `collab RUN` prints `collab.attribution` (text, or
+`--json` through `redacted_view`).
 
 The CLI resolves every `RUN` reference before read or mutation. `list --project`
 matches resolved project paths. Status selects results, attempt/session pointers,

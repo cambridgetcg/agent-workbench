@@ -22,12 +22,16 @@ default-profile memory and configuration are separate. Hermes configuration
 changes should be checked in a new session; an existing conversation retains
 its history and cached prompt assumptions.
 
-The installed macOS profile also sets a supported UTF-8 locale before shell
-startup and loads a profile-local `terminal.shell_init_files` script that puts
-Homebrew Python first on PATH. This fixes the system Python 3.9 selection and
-startup warnings that otherwise contaminated native file-tool output. Global
-shell files are unchanged. The fresh native terminal, filename/content search,
-write, patch and checksum paths were verified after this correction.
+The installed macOS profile also loads a profile-local
+`terminal.shell_init_files` script into its terminals. In this order, it puts the
+profile's own `bin` directory first on PATH (which pins only the native Claude
+launcher for this profile; other launchers keep their existing order), then
+Homebrew's `bin` and `sbin`, ahead of the inherited PATH, and sets `LANG` and
+`LC_ALL` to a UTF-8 locale. Homebrew's Python therefore precedes the system
+Python 3.9, which fixes that selection and the startup warnings that otherwise
+contaminated native file-tool output. Global shell files are unchanged. The
+fresh native terminal, filename/content search, write, patch and checksum paths
+were verified after this correction.
 
 Hermes maps `ultra` to the supported provider effort **`max`** for this model.
 This was verified with an actual native CLI request captured against a local
@@ -118,6 +122,20 @@ stop is available for Hermes. Hermes plugin evaluation is not implemented.
 `explain` can run native version/help checks; unlike the default doctor, that
 may cause Hermes's upstream update check. Run launches inspect `--help` and
 `chat --help` only and record the version as `not_probed`.
+
+## agenttool coordination
+
+Hermes registers agenttool's collab server under the single server name
+`agenttool`, so its tools are named `mcp__agenttool__collab_*` (underscores);
+Workbench timelines label them `Collab`. Hermes gives an MCP server only a safe
+environment baseline plus the server's own `env` block, so the journal location
+must be set there. Workbench reads the profile's `mcp_servers` block (the active
+profile for `hermes`, `astra-ultra` for `hermes-astra-ultra`) for `doctor` and
+`collab RUN` only, with a narrow scanner of that one block that never reads
+`providers`; it changes nothing. Workbench strips an inherited `TERMINAL_CWD`
+from every launch, because Hermes exports it to its terminals and a child Hermes
+session would otherwise anchor its tools away from the Workbench worktree. See
+[Coordinate through agenttool](../README.md#coordinate-through-agenttool).
 
 ## Install the skill in Hermes
 

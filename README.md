@@ -61,7 +61,8 @@ policies and another process's environment may change the effective settings.
 Configured effort is labeled separately from observed request behavior.
 Each version includes its selected executable. If multiple CLI installations
 exist, check that path: a shell may select an older installation with different
-effort support.
+effort support. Its `agenttool` section checks collab and lobby registrations
+offline (see [Coordinate through agenttool](#coordinate-through-agenttool)).
 
 `explain` shows selected configuration sources, scalar candidates, instruction
 file presence, hook/permission counts and plugin registration/cache/source
@@ -431,6 +432,71 @@ Private state defaults to `~/.local/state/agent-workbench`. Override it with
 `--state-dir PATH` or `AGENT_WORKBENCH_STATE_DIR` for isolated tests. Run logs
 contain task content and stay local with owner-only permissions.
 
+## Coordinate through agenttool
+
+Workbench children already reach agenttool's collab board and read-only lobby
+MCP tools through their own harness registrations (Claude Code's
+`~/.claude.json`, Codex's `config.toml`, a Hermes profile's `mcp_servers`).
+Workbench adds attribution and observation, not an MCP client:
+
+```sh
+agent-workbench create --harness hermes-astra-ultra --workspace worktree --collab \
+  --prompt 'Read project instructions. Claim the parser files on the board, then fix the failing test.'
+agent-workbench create workflow.json --collab-parent SESSION_ID
+agent-workbench collab RUN_ID
+agent-workbench collab RUN_ID --json
+```
+
+`--collab` gives every agent attempt a short Workbench note, placed directly
+after the task prompt and goal and before any predecessor or note data. If the
+child uses the board, it starts its own session rooted at the absolute path of
+its working directory, appends ` · workbench job ATTEMPT_ID` to its usual actor
+label, keeps a session its process already has, never opens another session's
+credential file, and ends its session with its leases released. The note
+authorizes nothing beyond the task. `--collab-parent SESSION_ID` (implies
+`--collab`) also asks children to pass that session as `parent_session_id`:
+declared lineage, sharing no lease, cursor or credential. Workbench checks it
+read-only at create: where a run harness's journal is readable, the parent must
+be there and belong to this project's repository, or the run is refused
+(`collab_parent_not_found`, `collab_parent_other_repository`) because collab would
+refuse it too; when no journal can be read it is accepted as `parent_check:
+unavailable`. Both flags work with a manifest. The opt-in is run-level state,
+shown by `plan` and `status`, and never exported or imported.
+
+`collab RUN` reads, live and read-only, the journal that each attempt's harness
+registration names (never collab's default path), and lists each attempt's
+sessions. A worktree attempt's are those rooted at its owned checkout that joined
+between its start and five seconds after its end, labelled or not, so runs from
+before this release attribute too. Shared and read-only attempts share a root, so
+only sessions whose actor label ends with the attempt ID count. Labels are
+self-declared routing hints, not authentication. It works for any run, opted in
+or not, saves nothing, and prints no journal path, credential location or actor
+text. When a session was left active it says so: Workbench does not end
+sessions. The launching host can end one with collab's own host end command
+(see collab's README).
+
+`doctor` adds an offline `agenttool` section per harness: whether collab and the
+lobby are registered, environment key names (never values), the journal's kind,
+`application_id`, `user_version` and whether collab 0.5.1's newer tables are
+present, each collab bundle's version and whether they differ, whether harnesses
+share one journal, and for the lobby whether its desk home exists (stat only) and
+the installed source commit. It starts no MCP server or CLI.
+
+Children never inherit the launching host's collab session binding, and each
+carries `AGENT_WORKBENCH_ATTEMPT` and `AGENT_WORKBENCH_STATE_ROOT`. Inside a child
+of the same state root, `run`, `retry`, `recover`, `stop`, `pause`, `steer`,
+`send`, `interrupt`, `workspace-remove`, `eval-run` and `create --collab-parent`
+refuse with `inside_workbench_child`: they are for the person or the host session
+that launched the run. This is a speed bump against accidental self-steering,
+not a security boundary. Timelines label collab and lobby tool calls `Collab`
+and `Lobby`.
+
+Workbench never ends collab sessions, performs lobby acts, runs an agenttool
+host, lobby, doorbell, courier, ferry or mission program, or allocates a
+pseudo-terminal; tests hold its own code to that. A child's own terminal tools
+are outside its reach. The [coordination roadmap](docs/roadmaps/coordination.md)
+lists what waits and why.
+
 ## Install the plugins
 
 Claude Code can use this checkout directly for a session:
@@ -475,6 +541,7 @@ work, with exact source revisions and installed-version boundaries.
 | [Run control](docs/roadmaps/run-control.md) | Live event metadata, Claude duplex receipts, pause/stop/recovery and optional status pane | Native run-boundary signals and interactive permission bridging |
 | [Doctor](docs/roadmaps/doctor.md) | Configuration explanations, executable/capability evidence and plugin evaluation | Stronger native effective-configuration evidence |
 | [Handoffs](docs/roadmaps/handoffs.md) | Versioned artifacts, inspectable history and bounded note continuity | Project comparison and evidence reconciliation |
+| [Coordination](docs/roadmaps/coordination.md) | Collab board note, live read-only session attribution and doctor registration checks | Collab 0.5.1 session fit, a bound host-side end and execution seats |
 
 ## Development
 
