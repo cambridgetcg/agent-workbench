@@ -332,7 +332,8 @@ does not make inference or network calls. Optional probe only configured loopbac
 health endpoints, no model calls. Distinguish inferred, configured and observed.
 `format_report(report) -> str`. No token/account-ID/email output. Version and
 listener probes pass `stdin=DEVNULL`. The `agenttool` section reports, per
-harness, from `collab.py`'s resolver: collab registered, sanitized registration
+harness, from `collab.py`'s resolver: collab and lobby registered (`null`, never
+`false`, when the host configuration could not be read or parsed), sanitized registration
 names, env key names, whether `AGENTOOL_COLLAB_DB` is configured, the journal kind
 (`sqlite_collab`, `sqlite_other`, `not_sqlite`, `missing`, `not_regular`,
 `unreadable`, or `unresolved` with its failure), `application_id_ok`,

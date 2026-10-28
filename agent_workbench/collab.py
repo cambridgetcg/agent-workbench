@@ -821,11 +821,13 @@ def agenttool_report(*, home=None, env=None):
                        "user_version": outcome["user_version"], "newer_tables": outcome["newer_tables"]}
             resolved_paths[harness] = resolved["real"]
         unparsed = found.get("unclassified_unparsed", 0)
-        row["collab"] = {"registered": True if collab_entries else None if unparsed else False,
+        # A configuration that could not be read says nothing about absence.
+        known = found["config_status"] in {"read", "absent"}
+        row["collab"] = {"registered": True if collab_entries else None if unparsed or not known else False,
                          "unclassified_unparsed": unparsed, "registrations": listed, "journal": journal}
         if HARNESS_HOSTS[harness] in {"claude", "codex"}:
             lobby = [entry for entry in found["entries"] if entry["kind"] == "lobby"]
-            row["lobby"] = {"registered": bool(lobby), "registrations": [
+            row["lobby"] = {"registered": True if lobby else False if known else None, "registrations": [
                 {"name": _safe_name(entry["name"]), "env_keys": _env_keys(entry["env"]),
                  "desk_home_present": _desk_home(entry), "installed_commit": _installed_commit(entry)}
                 for entry in lobby]}
@@ -852,7 +854,9 @@ def format_agenttool(report):
                     + (", newer tables present" if journal["newer_tables"] else "")
                     + (f", bundle {', '.join(versions)}" if versions else ", bundle version unknown"))
         elif row["config_status"] not in {"read", "absent"}:
-            text = f"configuration {row['config_status']}"
+            text = f"configuration {row['config_status']}" + ("; collab and lobby unknown" if "lobby" in row else "; collab unknown")
+            lines.append(f"  {harness} ({row['config']}): {text}")
+            continue
         elif collab_row["registered"] is None:
             count = collab_row["unclassified_unparsed"]
             text = f"collab registration unknown ({count} server{'' if count == 1 else 's'} unparsed)"

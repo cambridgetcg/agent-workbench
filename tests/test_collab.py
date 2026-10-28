@@ -554,6 +554,23 @@ class DoctorAgenttoolTests(CollabTestCase):
         self.assert_private(rendered)
         self.assertFalse([path for path in opened if "SENTINEL_DESK_HOME" in path])
 
+    def test_a_configuration_that_cannot_be_read_reports_unknown_not_absent(self):
+        (self.home / ".codex").mkdir()
+        (self.home / ".codex/config.toml").write_text("[mcp_servers.agenttool-lobby\n")
+        (self.home / ".claude.json").mkdir()
+        report, text = self.diagnose()
+        rows = report["agenttool"]["harnesses"]
+        for harness, status in (("codex", "malformed"), ("claude", "not_regular")):
+            with self.subTest(harness=harness):
+                self.assertEqual(rows[harness]["config_status"], status)
+                self.assertIsNone(rows[harness]["collab"]["registered"])
+                self.assertIsNone(rows[harness]["lobby"]["registered"])
+        self.assertIn("  codex (~/.codex/config.toml): configuration malformed; collab and lobby unknown\n", text)
+        self.assertNotIn("lobby not registered", text)
+        # An absent configuration is a definite absence.
+        self.assertIs(rows["hermes"]["collab"]["registered"], False)
+        self.assertIn("hermes (~/.hermes/config.yaml): collab not registered", text)
+
     def test_journal_kinds_versions_differ_and_unequal_journals(self):
         self.journal.parent.mkdir(parents=True)
         self.journal.write_text("placeholder\n" * 60)
