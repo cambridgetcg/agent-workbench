@@ -28,8 +28,11 @@ prompt = sys.stdin.read()
 mode = prompt.splitlines()[0]
 with pathlib.Path("calls.jsonl").open("a") as f:
     f.write(json.dumps({"kind": kind, "argv": sys.argv[1:], "prompt": prompt,
-                        "host_env": sorted(key for key in ("CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID") if key in os.environ),
-                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING")}) + "\n")
+                        "host_env": sorted(key for key in ("CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID",
+                                                           "AGENTOOL_COLLAB_SESSION_FILE", "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY",
+                                                           "AGENTOOL_COLLAB_CLAUDE_PID") if key in os.environ),
+                        "kept_env": os.environ.get("WORKBENCH_KEPT_SETTING"),
+                        "collab_db": os.environ.get("AGENTOOL_COLLAB_DB")}) + "\n")
 pathlib.Path("started").write_text(str(os.getpid()))
 if mode in {"ARGUMENT_ERROR", "ARGUMENT_ERROR_ZERO", "ARGUMENT_JSON_ERROR"}:
     diagnostic = "error: option '--effort <level>' argument 'xhigh' is invalid. It must be one of: low, medium, high, max; api_key=synthetic-stderr-secret"
@@ -395,6 +398,29 @@ class RunnerTests(unittest.TestCase):
         launch = state["tasks"][0]["attempts"][0]["launch"]
         self.assertIn("CLAUDE_CODE_MESSAGING_TOKEN", launch["host_session_environment_removed"])
         self.assertNotIn("synthetic-host-channel-token", json.dumps(state))
+
+    def test_collab_session_authority_is_not_inherited_but_journal_is(self):
+        host = {"AGENTOOL_COLLAB_SESSION_FILE": "/synthetic/collab-host-session.json",
+                "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY": "1", "AGENTOOL_COLLAB_CLAUDE_PID": "4242424242",
+                "AGENTOOL_COLLAB_DB": "/synthetic/collab.sqlite"}
+        with patch.dict(os.environ, host):
+            run_id = self.create([self.agent("codex", "codex"), self.agent("hermes", "hermes", depends_on=["codex"])])
+            state = run_workflow(self.store, run_id)
+        self.assertEqual(state["status"], "succeeded")
+        self.assertEqual([call["kind"] for call in self.calls()], ["codex", "hermes"])
+        for call in self.calls():
+            self.assertEqual(call["host_env"], [])
+            self.assertEqual(call["collab_db"], "/synthetic/collab.sqlite")
+        removed = ["AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY", "AGENTOOL_COLLAB_CLAUDE_PID", "AGENTOOL_COLLAB_SESSION_FILE"]
+        for task in state["tasks"]:
+            attempt = task["attempts"][0]
+            self.assertTrue(set(removed) <= set(attempt["launch"]["host_session_environment_removed"]))
+            self.assertNotIn("AGENTOOL_COLLAB_DB", attempt["launch"]["host_session_environment_removed"])
+            profile = (self.store.directory(run_id) / attempt["launch_profile"]).read_text()
+            self.assertNotIn("collab-host-session.json", profile)
+            self.assertNotIn("4242424242", profile)
+        self.assertNotIn("collab-host-session.json", json.dumps(state))
+        self.assertNotIn("4242424242", json.dumps(state))
 
     def test_hermes_file_mutation_footer_is_a_warning_not_clean_success(self):
         state = run_workflow(self.store, self.create([self.agent("edit", "hermes", prompt="MUTATION_FOOTER")]))

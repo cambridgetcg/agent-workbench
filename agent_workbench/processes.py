@@ -22,14 +22,18 @@ import time
 # Claude Code, or Codex when Workbench runs from its plugin (Codex 0.156 sets the
 # first four CODEX_ markers on every command it runs; newer hosts add the tool-call
 # id; the originator override and escalation socket are its entrypoint and channel
-# back to the parent). A native
+# back to the parent), and the host's AgentTool Collab session (a child resuming its
+# credential file would fence the host; cursor recovery is a one-off operator grant;
+# the Claude PID selects the host's actor name). A native
 # launch is a separate session, so these are never inherited. CODEX_SANDBOX* and
 # the network proxy variables stay: a sandbox does bind the processes inside it.
+# AGENTOOL_COLLAB_DB stays too: it selects the shared journal, not a session.
 HOST_SESSION_ENV = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
                     "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
                     "CLAUDE_PID", "CLAUDE_EFFORT",
                     "CODEX_CI", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_VERSION", "CODEX_TOOL_CALL_ID",
-                    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_ESCALATE_SOCKET")
+                    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_ESCALATE_SOCKET",
+                    "AGENTOOL_COLLAB_SESSION_FILE", "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY", "AGENTOOL_COLLAB_CLAUDE_PID")
 HOST_SESSION_PREFIXES = ("CLAUDE_CODE_MESSAGING_",)
 
 

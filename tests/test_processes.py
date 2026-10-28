@@ -107,6 +107,16 @@ class NativeEnvironmentTests(unittest.TestCase):
         self.assertEqual(host_session_variables(host), ["CODEX_CI", "CODEX_ESCALATE_SOCKET", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
                                                         "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_TOOL_CALL_ID", "CODEX_VERSION"])
 
+    def test_collab_session_authority_is_removed_but_journal_selection_stays(self):
+        from agent_workbench.processes import host_session_variables, native_environment
+        host = {"AGENTOOL_COLLAB_SESSION_FILE": "/private/session.json", "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY": "1",
+                "AGENTOOL_COLLAB_CLAUDE_PID": "123", "AGENTOOL_COLLAB_DB": "/journal/collab.sqlite",
+                "AGENTOOL_COLLAB_ANCHOR_LEDGER": "/journal/anchors.json", "PATH": "/bin"}
+        self.assertEqual(native_environment(host), {"AGENTOOL_COLLAB_DB": "/journal/collab.sqlite",
+                                                    "AGENTOOL_COLLAB_ANCHOR_LEDGER": "/journal/anchors.json", "PATH": "/bin"})
+        self.assertEqual(host_session_variables(host), ["AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY", "AGENTOOL_COLLAB_CLAUDE_PID",
+                                                        "AGENTOOL_COLLAB_SESSION_FILE"])
+
 
 if __name__ == "__main__":
     unittest.main()

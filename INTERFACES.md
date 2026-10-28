@@ -75,8 +75,10 @@ Codex sandbox flag value or None. `processes.native_environment()` omits the
 launching host session's identity and messaging variables
 (`HOST_SESSION_ENV`, which includes Codex's `CODEX_CI`, `CODEX_SESSION_ID`,
 `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_TOOL_CALL_ID`,
-`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
-credentials, `CODEX_SANDBOX*` and Codex's network proxy variables stay) for tasks, plugin
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, AgentTool Collab's
+`AGENTOOL_COLLAB_SESSION_FILE`, `AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY` and
+`AGENTOOL_COLLAB_CLAUDE_PID`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
+credentials, `CODEX_SANDBOX*`, Codex's network proxy variables and `AGENTOOL_COLLAB_DB` stay) for tasks, plugin
 evaluations and mod checks; a task's launch record lists the removed names.
 Launch inspection passes `update_check=False`, so Hermes's update-checking
 `--version` is not probed during runs.
