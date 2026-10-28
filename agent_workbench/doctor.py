@@ -122,8 +122,9 @@ def _version(name, env, home):
         selected = "[custom executable path withheld]"
     provenance = {"evidence": "observed", "selected_executable": selected}
     try:
-        completed = subprocess.run([executable, "--version"], capture_output=True, text=True,
-                                   timeout=3, env=env, cwd=home, check=False)
+        # No terminal stdin: a probe must not read from or wait on the caller's tty.
+        completed = subprocess.run([executable, "--version"], stdin=subprocess.DEVNULL, capture_output=True,
+                                   text=True, timeout=3, env=env, cwd=home, check=False)
         output = (completed.stdout + "\n" + completed.stderr)[:4096]
         match = re.search(r"(?<![\w.])v?(\d{1,4}\.\d{1,4}\.\d{1,4}(?:\.\d{1,4})?)(?![\w.])", output)
         # A version-like string from a failed command is not a reported version.
@@ -252,7 +253,8 @@ def _listener(pair, env, home):
     host = f"[{host}]" if ":" in host else host
     try:
         result = subprocess.run([executable, "-nP", "-a", f"-iTCP@{host}:{port}", "-sTCP:LISTEN", "-Fpc"],
-                                capture_output=True, text=True, timeout=3, env=env, cwd=home, check=False)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3,
+                                env=env, cwd=home, check=False)
         pids = {line[1:] for line in result.stdout.splitlines() if re.fullmatch(r"p[0-9]+", line)}
         if result.returncode not in (0, 1) or (result.stderr and not pids):
             return {"status": "unknown", "reason": "listener inspection failed"}

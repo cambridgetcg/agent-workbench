@@ -235,6 +235,14 @@ class DoctorTests(unittest.TestCase):
         external = self.diagnose()["versions"]["claude"]
         self.assertEqual(external["selected_executable"], "/synthetic/bin/claude")
 
+    def test_version_and_listener_probes_never_inherit_terminal_stdin(self):
+        self.session()
+        self.diagnose()
+        probes = [kwargs for argv, kwargs in self.calls]
+        self.assertTrue(any(argv[1] == "--version" for argv, _ in self.calls))
+        self.assertTrue(any(argv[1] == "-nP" for argv, _ in self.calls))
+        self.assertTrue(all(kwargs.get("stdin") is subprocess.DEVNULL for kwargs in probes))
+
     def test_listener_metadata_is_observed_without_process_environment(self):
         self.session()
         def fake(argv, **kwargs):
