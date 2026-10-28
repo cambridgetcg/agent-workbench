@@ -917,5 +917,21 @@ class RunnerTests(unittest.TestCase):
                 process.communicate()
 
 
+class RedactionTests(unittest.TestCase):
+    def test_collab_session_token_is_redacted_by_its_key(self):
+        from agent_workbench.runner import redact_summary
+        # Collab session tokens are 43 base64url characters with no prefix.
+        token = "Qx7-Z_k2" + "a" * 35
+        self.assertEqual(len(token), 43)
+        printed = json.dumps({"format": 1, "session_id": "session_00000000-0000-4000-8000-000000000000",
+                              "session_token": token}, indent=2)
+        for text in (printed, f"session_token={token}", f"SESSION-TOKEN: {token}", f"'session_token': '{token}'"):
+            with self.subTest(text=text[:20]):
+                redacted = redact_summary(text)
+                self.assertNotIn(token, redacted)
+                self.assertIn("[redacted]", redacted)
+        self.assertIn("session_00000000-0000-4000-8000-000000000000", redact_summary(printed))
+
+
 if __name__ == "__main__":
     unittest.main()
