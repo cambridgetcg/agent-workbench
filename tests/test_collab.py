@@ -416,6 +416,25 @@ class JournalResolutionTests(CollabTestCase):
                 active.write_bytes(content)
                 self.assertEqual(self.resolve("hermes")["failure"], "hermes_profile_invalid")
 
+    def test_symlinked_host_configurations_are_followed_as_the_hosts_follow_them(self):
+        # Dotfile managers symlink host configuration; only the journal refuses links.
+        dotfiles = self.root / "dotfiles"
+        self.register_claude(config=dotfiles / "claude.json")
+        self.register_codex(root=dotfiles / "codex")
+        self.register_hermes()
+        (self.home / ".claude.json").symlink_to(dotfiles / "claude.json")
+        (self.home / ".codex").mkdir()
+        (self.home / ".codex/config.toml").symlink_to(dotfiles / "codex" / "config.toml")
+        profile = self.home / ".hermes/profiles/astra-ultra"
+        (profile / "config.yaml").rename(dotfiles / "config.yaml")
+        (profile / "config.yaml").symlink_to(dotfiles / "config.yaml")
+        (self.home / ".hermes/active_profile").rename(dotfiles / "active_profile")
+        (self.home / ".hermes/active_profile").symlink_to(dotfiles / "active_profile")
+        for harness in ("claude", "codex", "hermes", "hermes-astra-ultra"):
+            with self.subTest(harness=harness):
+                self.assertEqual(collab.registrations(harness, home=self.home, env=self.env)["config_status"], "read")
+                self.assertEqual(self.resolve(harness)["real"], str(self.journal))
+
     def test_scanner_reads_only_the_column_zero_mcp_servers_block(self):
         text = ("providers:\n  p:\n    key_cmd: SENTINEL_KEY_CMD\nmcp_servers:\n  agenttool:\n    command: bun\n"
                 "    args:\n      - run\n      - 'it''s.js'\n    env:\n      AGENTOOL_COLLAB_DB: \"/j.sqlite\"  # journal\n"

@@ -83,9 +83,13 @@ def _configured(value, default, home):
 
 
 def _read_bounded(path, limit=_CONFIG_LIMIT):
-    """Bytes of a regular file, without following a final symbolic link."""
+    """Bytes of a bounded regular file, for host configuration and metadata.
+
+    A final symbolic link is followed, as the hosts and doctor's own reads
+    follow dotfile-manager links; only the journal refuses links.
+    """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
     except FileNotFoundError:
         return None, "absent"
     except OSError:

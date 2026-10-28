@@ -275,7 +275,9 @@ command is started, no session is ended, and no credential file is opened.
   differs (after `os.path.realpath`) give `journal_ambiguous`; no location gives
   `journal_unconfigured`. Other failures: `collab_not_registered`,
   `registration_unreadable`, `registration_unparsed`, `journal_path_not_absolute`,
-  `hermes_profile_invalid`. Results carry private paths; callers expose none.
+  `hermes_profile_invalid`. Host configuration files follow a final symbolic link,
+  as the hosts do; only the journal refuses links. Results carry private paths;
+  callers expose none.
 - `read_journal(path, reader=None)` requires `lstat` to show a regular file,
   a 16-byte `O_RDONLY|O_NOFOLLOW` header read of `SQLite format 3\0`
   (`journal_not_sqlite`), then opens `Path(realpath).as_uri() + "?mode=ro"` with
