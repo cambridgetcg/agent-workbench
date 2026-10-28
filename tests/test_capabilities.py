@@ -138,6 +138,59 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(profile["configuration"]["hermes"]["status"], "not_inspected")
         self.assertNotIn("PRIVATE_VERSION", json.dumps(profile))
 
+    def test_launch_records_the_selected_harness_mcp_names_only(self):
+        for name in ("claude", "codex", "hermes"):
+            self.executable(name=name)
+        self.write(".claude.json", {"mcpServers": {"claude-server": {"command": "private-mcp-command", "env": {"K": "private-env"}}}})
+        self.write(".codex/config.toml", '[mcp_servers.codex-server]\nurl = "https://private.example/mcp"\nenabled_tools = ["a"]\n')
+        self.write(".hermes/config.yaml", "mcp_servers:\n  hermes-server:\n    args: [private-argument]\n    trust: untrusted\n")
+        claude = self.inspect()["mcp_servers"]
+        self.assertEqual(claude["sources"][0]["servers"], [{"name": "claude-server"}])
+        codex = self.inspect({"harness": "codex"})["mcp_servers"]
+        self.assertEqual(codex["sources"][0]["servers"], [{"name": "codex-server", "enabled_tools_count": 1}])
+        with patch.object(capabilities, "explain_configuration", side_effect=AssertionError("No Claude or Codex reads")):
+            hermes = self.inspect({"harness": "hermes"})
+        self.assertEqual(hermes["mcp_servers"]["sources"][0]["servers"], [{"name": "hermes-server", "trust": "untrusted"}])
+        self.assertNotIn("claude-server", json.dumps(hermes))
+        rendered = json.dumps([claude, codex, hermes])
+        for secret in ("private-mcp-command", "private-env", "private.example", "private-argument"):
+            self.assertNotIn(secret, rendered)
+        self.write(".hermes/config.yaml", "mcp_servers: {broken: [\n")
+        profile = self.inspect({"harness": "hermes"})
+        self.assertEqual(profile["mcp_servers"]["status"], "incomplete")
+        self.assertTrue(any("could not be inspected (unparsed)" in warning for warning in profile["warnings"]))
+
+    def test_launch_inspection_opens_account_state_only_for_mcp_names(self):
+        from agent_workbench import mcp
+        self.executable()
+        self.write(".claude.json", {"mcpServers": {"agentlayer": {"command": "private-mcp-command"}},
+                                    "primaryApiKey": "sk-private-api-key", "oauthAccount": {"emailAddress": "private-person@example.invalid"}})
+        self.write(".claude/.credentials.json", {"private-credential": "secret"})
+        self.write(".codex/auth.json", {"private-credential": "secret"})
+        explained, inventoried = [], []
+        def recorded(function, opened):
+            def read(path, *args, **kwargs):
+                opened.append(path.name)
+                return function(path, *args, **kwargs)
+            return read
+        with patch.object(capabilities, "_read", recorded(capabilities._read, explained)), \
+                patch.object(mcp, "_read", recorded(mcp._read, inventoried)):
+            profile = self.inspect()
+        self.assertTrue(explained)
+        self.assertFalse({".claude.json", ".credentials.json", "auth.json"} & set(explained))
+        self.assertEqual(inventoried.count(".claude.json"), 1)
+        self.assertFalse({".credentials.json", "auth.json"} & set(inventoried))
+        self.assertFalse(profile["configuration"]["authentication_files_read"])
+        self.assertTrue(profile["mcp_servers"]["account_state_file_read"])
+        for secret in ("sk-private-api-key", "private-person@example.invalid", "private-mcp-command"):
+            self.assertNotIn(secret, json.dumps(profile))
+
+    def test_launch_inventory_resolves_a_relative_hermes_home_against_the_project(self):
+        self.executable(name="hermes")
+        self.env["HERMES_HOME"] = "hermes-relative"
+        inventory = self.inspect({"harness": "hermes"})["mcp_servers"]
+        self.assertEqual(inventory["profile"], "~/project/hermes-relative")
+
     def test_launch_inspection_can_skip_hermes_update_checking_version(self):
         self.executable(name="hermes")
         self.executable(name="codex")

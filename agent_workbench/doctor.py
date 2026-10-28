@@ -19,6 +19,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .mcp import _hermes_home, mcp_inventory
+
 
 _LIMIT = 2 * 1024 * 1024
 _EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"}
@@ -47,7 +49,7 @@ def _load(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
         return (parsed, "read") if isinstance(parsed, dict) else (None, "malformed")
     except FileNotFoundError:
         return None, "absent"
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError, UnicodeError, RecursionError):
         return None, "malformed"
     except OSError:
         return None, "unreadable"
@@ -377,7 +379,10 @@ def _hermes(home, env):
                 for part in Path(selected).parts):
             selected = "[custom executable path withheld]"
         executables[name] = {"status": "present", "selected_executable": selected}
-    profile = home / ".hermes/profiles/astra-ultra"
+    # HERMES_HOME can be either an installation root or an already-selected
+    # named profile. Inspect Astra Ultra only within that same installation.
+    _, root = _hermes_home(env, home)
+    profile = root / "profiles/astra-ultra"
     binding = profile / "workbench-subscription.json"
     auth = {"status": "not_configured", "refresh_performed": False}
     if binding.exists():
@@ -389,7 +394,7 @@ def _hermes(home, env):
     return {"executables": executables, "astra_ultra_profile_present": profile.is_dir(),
             "subscription_binding": auth,
             "limitations": ["Native version probes are opt-in through explain because Hermes can check for updates.",
-                            "Profile configuration, tool readiness and actual request effort are not inspected here."]}
+                            "Profile configuration other than MCP server names, tool readiness and actual request effort are not inspected here."]}
 
 
 def diagnose(*, project: Path | None = None, home: Path | None = None,
@@ -411,6 +416,9 @@ def diagnose(*, project: Path | None = None, home: Path | None = None,
         "claude": _claude(home, project, environment),
         "astra": _astra(home, environment, token, now, probe),
         "hermes": _hermes(home, environment),
+        # Astra wrappers read Claude's configuration, so Claude's row covers them.
+        "mcp_servers": {harness: mcp_inventory(harness, project, home=home, env=environment)
+                        for harness in ("codex", "claude", "hermes", "hermes-astra-ultra")},
     }
 
 
@@ -472,4 +480,12 @@ def format_report(report) -> str:
         lines.append(f"    Observed listener: {observed['listener']['status']}; health: {observed['health']['status']}" +
                      (f" (HTTP {observed['health']['http_status']})" if "http_status" in observed["health"] else ""))
         lines.append("    Ultracode activation and actual backend reasoning effort: not observed.")
+    for harness, inventory in report.get("mcp_servers", {}).items():
+        names = dict.fromkeys(server["name"] + (" (disabled)" if server.get("enabled") is False else "")
+                              for row in inventory.get("sources", []) for server in row.get("servers", []))
+        line = f"MCP servers for {harness} (configured names only): {', '.join(names) or 'none'} [{inventory.get('status')}]"
+        warnings = inventory.get("warnings", [])
+        if warnings:
+            line += f"; {warnings[0]}" + (f" (+{len(warnings) - 1} more in JSON)" if len(warnings) > 1 else "")
+        lines.append(line)
     return "\n".join(lines)

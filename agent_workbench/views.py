@@ -22,7 +22,7 @@ _EVENT_FIELDS = (
     "session_id", "native_task_id", "tool_use_id", "parent_tool_use_id", "item_id", "agent_id",
     "tool", "role", "terminal_reason", "request_id", "action", "code", "decision_type", "subtype",
     "input_tokens", "output_tokens", "total_cost_usd", "num_turns", "duration_ms", "duration_api_ms", "task_type",
-    "jobs",
+    "jobs", "collab_context",
 )
 
 
@@ -66,7 +66,8 @@ def status_details(state: dict) -> dict:
         if latest is not None:
             attempt = attempts[-1]
             launch = attempt.get("launch", {})
-            latest["launch"] = {**_selected(launch, ("harness", "display_executable", "status", "native_sandbox")),
+            latest["launch"] = {**_selected(launch, ("harness", "display_executable", "status", "native_sandbox",
+                                                     "collab_context_included")),
                                 "version": _selected(launch.get("version", {}), ("status", "version", "subject"))}
             latest["workspace"] = _selected(attempt.get("workspace", {}), (
                 "mode", "path", "base_ref", "base_commit", "retained", "sandboxed", "source_dirty",

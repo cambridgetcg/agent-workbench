@@ -149,6 +149,19 @@ class CliV03Tests(unittest.TestCase):
         self.assertEqual(completed["status"], "succeeded")
         self.assertEqual([len(task["attempts"]) for task in completed["tasks"]], [1, 1])
 
+    def test_run_collab_context_is_an_invocation_option_recorded_at_start(self):
+        tasks = [{"id": "work", "harness": "command", "argv": [sys.executable, "-c", "pass"]}]
+        for arguments, expected in ((("--collab-context",), True), ((), False)):
+            with self.subTest(arguments=arguments):
+                run_id = self.create(tasks=tasks)
+                code, _, error = self.cli("run", run_id, *arguments)
+                self.assertEqual((code, error), (0, ""))
+                state = self.store.read(run_id)
+                self.assertIs(next(event["collab_context"] for event in state["events"] if event["kind"] == "run_started"), expected)
+                # Command tasks receive no prompt, so never the lineage block.
+                self.assertIs(state["tasks"][0]["attempts"][0]["launch"]["collab_context_included"], False)
+                self.assertIsNone(state["controller"])
+
     def test_run_warns_before_starting_when_its_timeout_cuts_a_hermes_budget(self):
         run_id = self.create(tasks=[{"id": "astra", "harness": "hermes-astra-ultra", "prompt": "Work.",
                                      "run_budget_seconds": 2400, "timeout_seconds": 3000}])

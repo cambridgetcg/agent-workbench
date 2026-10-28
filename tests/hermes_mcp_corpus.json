@@ -1,0 +1,379 @@
+{
+ "about": "Hermes config.yaml texts and the MCP inventory source the minimal reader must report for each. Generated once from synthetic configurations dumped by PyYAML and by Hermes's ruamel writers, plus hand-written cases. Every expectation was checked against Hermes's own enabled/trust/tools.include rules applied to PyYAML safe_load and to Hermes's ruamel YAML 1.1 safe_load: the reader either matches both or reports unparsed.",
+ "cases": [
+  {
+   "case": "typical, PyYAML block",
+   "yaml": "model:\n  default: gpt-6-astra\n  provider: custom\ntoolsets:\n- hermes-cli\n- web\nmcp_servers:\n  agentlayer:\n    command: /private/bin/agentlayer-mcp\n    args:\n    - --journal\n    - private-argument\n    env:\n      AGENTOOL_COLLAB_DB: private-env-value\n    tools:\n      include:\n      - collab_next\n      - collab_task_*\n  agenttool:\n    url: https://private.example/mcp\n    headers:\n      Authorization: Bearer private-bearer-token\n    enabled: false\n    trust: untrusted\n  telescope:\n    command: npx\n    args:\n    - -y\n    - private-package@1.2.3\n    enabled: true\n    trust: full\n    tools:\n      include: []\n      exclude:\n      - delete_*\n    timeout: 120\nplatform_hints:\n  cli:\n    append: 'Answer briefly: no tables, # no headings'\ncompression:\n  enabled: true\n  threshold: 0.6\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "agentlayer",
+      "tools_include_count": 2
+     },
+     {
+      "name": "agenttool",
+      "enabled": false,
+      "trust": "untrusted"
+     },
+     {
+      "name": "telescope",
+      "enabled": true,
+      "trust": "full",
+      "tools_include_count": 0
+     }
+    ]
+   }
+  },
+  {
+   "case": "typical, PyYAML one-line flow",
+   "yaml": "{model: {default: gpt-6-astra, provider: custom}, toolsets: [hermes-cli, web], mcp_servers: {agentlayer: {command: /private/bin/agentlayer-mcp, args: [--journal, private-argument], env: {AGENTOOL_COLLAB_DB: private-env-value}, tools: {include: [collab_next, collab_task_*]}}, agenttool: {url: 'https://private.example/mcp', headers: {Authorization: Bearer private-bearer-token}, enabled: false, trust: untrusted}, telescope: {command: npx, args: [-y, private-package@1.2.3], enabled: true, trust: full, tools: {include: [], exclude: [delete_*]}, timeout: 120}}, platform_hints: {cli: {append: 'Answer briefly: no tables, # no headings'}}, compression: {enabled: true, threshold: 0.6}}\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "agentlayer",
+      "tools_include_count": 2
+     },
+     {
+      "name": "agenttool",
+      "enabled": false,
+      "trust": "untrusted"
+     },
+     {
+      "name": "telescope",
+      "enabled": true,
+      "trust": "full",
+      "tools_include_count": 0
+     }
+    ]
+   }
+  },
+  {
+   "case": "typical, PyYAML wrapped flow",
+   "yaml": "{model: {default: gpt-6-astra, provider: custom}, toolsets: [hermes-cli, web], mcp_servers: {\n    agentlayer: {command: /private/bin/agentlayer-mcp, args: [--journal, private-argument],\n      env: {AGENTOOL_COLLAB_DB: private-env-value}, tools: {include: [collab_next,\n          collab_task_*]}}, agenttool: {url: 'https://private.example/mcp', headers: {\n        Authorization: Bearer private-bearer-token}, enabled: false, trust: untrusted},\n    telescope: {command: npx, args: [-y, private-package@1.2.3], enabled: true, trust: full,\n      tools: {include: [], exclude: [delete_*]}, timeout: 120}}, platform_hints: {\n    cli: {append: 'Answer briefly: no tables, # no headings'}}, compression: {enabled: true,\n    threshold: 0.6}}\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "agentlayer",
+      "tools_include_count": 2
+     },
+     {
+      "name": "agenttool",
+      "enabled": false,
+      "trust": "untrusted"
+     },
+     {
+      "name": "telescope",
+      "enabled": true,
+      "trust": "full",
+      "tools_include_count": 0
+     }
+    ]
+   }
+  },
+  {
+   "case": "typical, Hermes safe_dump (ruamel, sequence offset 2)",
+   "yaml": "model:\n  default: gpt-6-astra\n  provider: custom\ntoolsets:\n  - hermes-cli\n  - web\nmcp_servers:\n  agentlayer:\n    command: /private/bin/agentlayer-mcp\n    args:\n      - --journal\n      - private-argument\n    env:\n      AGENTOOL_COLLAB_DB: private-env-value\n    tools:\n      include:\n        - collab_next\n        - collab_task_*\n  agenttool:\n    url: https://private.example/mcp\n    headers:\n      Authorization: Bearer private-bearer-token\n    enabled: false\n    trust: untrusted\n  telescope:\n    command: npx\n    args:\n      - -y\n      - private-package@1.2.3\n    enabled: true\n    trust: full\n    tools:\n      include: []\n      exclude:\n        - delete_*\n    timeout: 120\nplatform_hints:\n  cli:\n    append: 'Answer briefly: no tables, # no headings'\ncompression:\n  enabled: true\n  threshold: 0.6\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "agentlayer",
+      "tools_include_count": 2
+     },
+     {
+      "name": "agenttool",
+      "enabled": false,
+      "trust": "untrusted"
+     },
+     {
+      "name": "telescope",
+      "enabled": true,
+      "trust": "full",
+      "tools_include_count": 0
+     }
+    ]
+   }
+  },
+  {
+   "case": "typical, Hermes round-trip editor",
+   "yaml": "model:\n  default: gpt-6-astra\n  provider: custom\ntoolsets:\n  - hermes-cli\n  - web\nmcp_servers:\n  agentlayer:\n    command: /private/bin/agentlayer-mcp\n    args:\n      - --journal\n      - private-argument\n    env:\n      AGENTOOL_COLLAB_DB: private-env-value\n    tools:\n      include:\n        - collab_next\n        - collab_task_*\n  agenttool:\n    url: https://private.example/mcp\n    headers:\n      Authorization: Bearer private-bearer-token\n    enabled: false\n    trust: untrusted\n  telescope:\n    command: npx\n    args:\n      - -y\n      - private-package@1.2.3\n    enabled: true\n    trust: full\n    tools:\n      include: []\n      exclude:\n        - delete_*\n    timeout: 120\nplatform_hints:\n  cli:\n    append: 'Answer briefly: no tables, # no headings'\ncompression:\n  enabled: true\n  threshold: 0.6\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "agentlayer",
+      "tools_include_count": 2
+     },
+     {
+      "name": "agenttool",
+      "enabled": false,
+      "trust": "untrusted"
+     },
+     {
+      "name": "telescope",
+      "enabled": true,
+      "trust": "full",
+      "tools_include_count": 0
+     }
+    ]
+   }
+  },
+  {
+   "case": "edge values, PyYAML block",
+   "yaml": "mcp_servers:\n  quoted-words:\n    enabled: 'yes'\n    trust: Full\n    tools:\n      include: read_*\n  off-word:\n    enabled: 'off'\n    command: private-command\n    args:\n    - - nested\n      - private-argument\n    - k: 'v: w'\n  odd-trust:\n    trust: sometimes\n    env:\n      NOTE: 'line one\n\n        line two'\n  empty: {}\n  no-entry: null\n  dotted.name_1:\n    url: http://private.example:8080/mcp?x=1#frag\n    enabled: 'false'\nnotes:\n  multi: 'first line\n\n    second: line # not a comment\n\n    '\n  quote: it's \"quoted\"\n  unicode: café\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "quoted-words",
+      "enabled": true,
+      "trust": "full",
+      "tools_include_count": 1
+     },
+     {
+      "name": "off-word",
+      "enabled": false
+     },
+     {
+      "name": "odd-trust",
+      "trust": "[unrecognized trust withheld]"
+     },
+     {
+      "name": "empty"
+     },
+     {
+      "name": "no-entry",
+      "status": "malformed"
+     },
+     {
+      "name": "dotted.name_1",
+      "enabled": false
+     }
+    ]
+   }
+  },
+  {
+   "case": "edge values, PyYAML one-line flow",
+   "yaml": "{mcp_servers: {quoted-words: {enabled: 'yes', trust: Full, tools: {include: read_*}}, off-word: {enabled: 'off', command: private-command, args: [[nested, private-argument], {k: 'v: w'}]}, odd-trust: {trust: sometimes, env: {NOTE: 'line one\n\n          line two'}}, empty: {}, no-entry: null, dotted.name_1: {url: 'http://private.example:8080/mcp?x=1#frag', enabled: 'false'}}, notes: {multi: 'first line\n\n      second: line # not a comment\n\n      ', quote: it's \"quoted\", unicode: café}}\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "quoted-words",
+      "enabled": true,
+      "trust": "full",
+      "tools_include_count": 1
+     },
+     {
+      "name": "off-word",
+      "enabled": false
+     },
+     {
+      "name": "odd-trust",
+      "trust": "[unrecognized trust withheld]"
+     },
+     {
+      "name": "empty"
+     },
+     {
+      "name": "no-entry",
+      "status": "malformed"
+     },
+     {
+      "name": "dotted.name_1",
+      "enabled": false
+     }
+    ]
+   }
+  },
+  {
+   "case": "edge values, Hermes safe_dump (ruamel, sequence offset 2)",
+   "yaml": "mcp_servers:\n  quoted-words:\n    enabled: 'yes'\n    trust: Full\n    tools:\n      include: read_*\n  off-word:\n    enabled: 'off'\n    command: private-command\n    args:\n      -   - nested\n          - private-argument\n      - k: 'v: w'\n  odd-trust:\n    trust: sometimes\n    env:\n      NOTE: \"line one\\nline two\"\n  empty: {}\n  no-entry: null\n  dotted.name_1:\n    url: http://private.example:8080/mcp?x=1#frag\n    enabled: 'false'\nnotes:\n  multi: \"first line\\nsecond: line # not a comment\\n\"\n  quote: it's \"quoted\"\n  unicode: café\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "quoted-words",
+      "enabled": true,
+      "trust": "full",
+      "tools_include_count": 1
+     },
+     {
+      "name": "off-word",
+      "enabled": false
+     },
+     {
+      "name": "odd-trust",
+      "trust": "[unrecognized trust withheld]"
+     },
+     {
+      "name": "empty"
+     },
+     {
+      "name": "no-entry",
+      "status": "malformed"
+     },
+     {
+      "name": "dotted.name_1",
+      "enabled": false
+     }
+    ]
+   }
+  },
+  {
+   "case": "no mcp_servers",
+   "yaml": "model: {default: x}\nnote: 'mcp_servers is mentioned only here'\n",
+   "expected": {
+    "status": "read",
+    "servers": []
+   }
+  },
+  {
+   "case": "comments after keys and values",
+   "yaml": "---\nmcp_servers:  # servers\n  a:\n    enabled: false  # off\n    trust: untrusted\n  b: {enabled: true}  # on\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "a",
+      "enabled": false,
+      "trust": "untrusted"
+     },
+     {
+      "name": "b",
+      "enabled": true
+     }
+    ]
+   }
+  },
+  {
+   "case": "byte order mark before flow",
+   "yaml": "﻿{mcp_servers: {a: {enabled: false}}}\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "a",
+      "enabled": false
+     }
+    ]
+   }
+  },
+  {
+   "case": "quoted merge-like key is ordinary",
+   "yaml": "mcp_servers: {a: {'<<': {enabled: false}}}\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "a"
+     }
+    ]
+   }
+  },
+  {
+   "case": "numeric and YAML 1.1 flags are not guessed",
+   "yaml": "mcp_servers:\n  zero: {enabled: 0.0}\n  n-flag: {enabled: n}\n  y-flag: {enabled: y}\n  five: {tools: {include: 5}}\n  ok: {enabled: 'no'}\n",
+   "expected": {
+    "status": "read",
+    "servers": [
+     {
+      "name": "zero",
+      "status": "unparsed"
+     },
+     {
+      "name": "n-flag",
+      "status": "unparsed"
+     },
+     {
+      "name": "y-flag",
+      "status": "unparsed"
+     },
+     {
+      "name": "five",
+      "status": "unparsed"
+     },
+     {
+      "name": "ok",
+      "enabled": false
+     }
+    ]
+   }
+  },
+  {
+   "case": "block merge key",
+   "yaml": "base: &b {enabled: false}\nmcp_servers:\n  a:\n    <<: *b\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  },
+  {
+   "case": "flow merge key",
+   "yaml": "base: &b {enabled: false}\nmcp_servers:\n  a: {<<: *b, command: x}\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  },
+  {
+   "case": "flow merge at the top level",
+   "yaml": "{<<: {mcp_servers: {a: {enabled: false}}}, model: x}\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  },
+  {
+   "case": "alias as a server",
+   "yaml": "mcp_servers: {a: &s {enabled: false}, b: *s}\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  },
+  {
+   "case": "tag on a flag",
+   "yaml": "mcp_servers:\n  a: {enabled: !!str false}\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  },
+  {
+   "case": "block scalar flag",
+   "yaml": "mcp_servers:\n  a:\n    enabled: |\n      false\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  },
+  {
+   "case": "duplicate server",
+   "yaml": "mcp_servers:\n  a: {}\n  a: {enabled: false}\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  },
+  {
+   "case": "two documents",
+   "yaml": "mcp_servers: {a: {}}\n---\nmcp_servers: {b: {}}\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  },
+  {
+   "case": "tab indentation",
+   "yaml": "mcp_servers:\n\ta: {}\n",
+   "expected": {
+    "status": "unparsed",
+    "servers": []
+   }
+  }
+ ]
+}

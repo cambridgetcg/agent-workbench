@@ -1,4 +1,5 @@
 import base64
+from contextlib import chdir
 import json
 import os
 from pathlib import Path
@@ -118,6 +119,136 @@ class DoctorTests(unittest.TestCase):
         for secret in (token, "private-account-id", "private-refresh-token", str(binding)):
             self.assertNotIn(secret, rendered)
 
+    def test_hermes_active_home_override_finds_relocated_profile(self):
+        from agent_workbench import codex_token
+        token = self.auth()
+        binding = self.write("relocated/profiles/astra-ultra/workbench-subscription.json",
+                             {"expected_account_id": "private-account-id",
+                              "codex_home": str(self.home / ".codex")})
+        binding.chmod(0o600)
+        self.env["HERMES_HOME"] = str(binding.parent)
+        before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        with patch.object(codex_token, "_official_refresh", side_effect=AssertionError("No refresh")):
+            report = self.diagnose()
+        hermes = report["hermes"]
+        self.assertTrue(hermes["astra_ultra_profile_present"])
+        self.assertEqual(hermes["subscription_binding"]["status"], "ready")
+        self.assertFalse(hermes["subscription_binding"]["refresh_performed"])
+        self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
+        self.assertFalse(any("hermes" in argv[0] for argv, _ in self.calls))
+        for secret in (token, "private-account-id", "private-refresh-token", str(binding)):
+            self.assertNotIn(secret, json.dumps(report) + doctor.format_report(report))
+
+    def test_hermes_home_override_selects_astra_from_the_same_root(self):
+        self.auth()
+        binding = self.write("relocated/profiles/astra-ultra/workbench-subscription.json",
+                             {"expected_account_id": "private-account-id",
+                              "codex_home": str(self.home / ".codex")})
+        binding.chmod(0o600)
+        other = self.write("relocated/profiles/research/workbench-subscription.json",
+                           {"expected_account_id": "unrelated-account",
+                            "codex_home": str(self.home / ".codex")})
+        other.chmod(0o600)
+        for location in (str(self.home / "relocated"), str(other.parent),
+                         "~/relocated", "~/relocated/profiles/research"):
+            with self.subTest(location=location):
+                self.env["HERMES_HOME"] = location
+                hermes = self.diagnose()["hermes"]
+                self.assertTrue(hermes["astra_ultra_profile_present"])
+                self.assertEqual(hermes["subscription_binding"]["status"], "ready")
+                self.assertNotIn("unrelated-account", json.dumps(hermes))
+
+    def test_hermes_relative_home_uses_process_cwd(self):
+        from agent_workbench import codex_token
+        token = self.auth()
+        cwd = self.home / "working-directory"
+        for root, account in (("working-directory/relocated", "private-account-id"),
+                              ("relocated", "competing-private-account")):
+            binding = self.write(f"{root}/profiles/astra-ultra/workbench-subscription.json",
+                                 {"expected_account_id": account,
+                                  "codex_home": str(self.home / ".codex")})
+            binding.chmod(0o600)
+        other = self.write("working-directory/relocated/profiles/research/workbench-subscription.json",
+                           {"expected_account_id": "unrelated-account",
+                            "codex_home": str(self.home / ".codex")})
+        other.chmod(0o600)
+        before = {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
+        with chdir(cwd), patch.object(codex_token, "_official_refresh", side_effect=AssertionError("No refresh")):
+            for location in ("./relocated", "./relocated/profiles/astra-ultra", "./relocated/profiles/research"):
+                with self.subTest(location=location):
+                    self.env["HERMES_HOME"] = location
+                    report = self.diagnose()
+                    hermes = report["hermes"]
+                    self.assertTrue(hermes["astra_ultra_profile_present"])
+                    self.assertEqual(hermes["subscription_binding"]["status"], "ready")
+                    self.assertFalse(hermes["subscription_binding"]["refresh_performed"])
+                    rendered = json.dumps(report) + doctor.format_report(report)
+                    for secret in (token, "private-account-id", "private-refresh-token",
+                                   "competing-private-account", "unrelated-account", str(self.home)):
+                        self.assertNotIn(secret, rendered)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
+        self.assertFalse(any("hermes" in argv[0] for argv, _ in self.calls))
+
+    def test_hermes_home_preserves_trailing_space(self):
+        self.auth()
+        for root, account in (("installation ", "private-account-id"),
+                              ("installation", "competing-private-account")):
+            binding = self.write(f"{root}/profiles/astra-ultra/workbench-subscription.json",
+                                 {"expected_account_id": account,
+                                  "codex_home": str(self.home / ".codex")})
+            binding.chmod(0o600)
+        self.env["HERMES_HOME"] = str(self.home / "installation ")
+        hermes = self.diagnose()["hermes"]
+        self.assertTrue(hermes["astra_ultra_profile_present"])
+        self.assertEqual(hermes["subscription_binding"]["status"], "ready")
+        self.assertFalse(hermes["subscription_binding"]["refresh_performed"])
+
+    def test_hermes_blank_home_uses_the_default_root(self):
+        (self.home / ".hermes/profiles/astra-ultra").mkdir(parents=True)
+        for value in ("", " ", "\t"):
+            with self.subTest(value=value):
+                self.env["HERMES_HOME"] = value
+                self.assertTrue(self.diagnose()["hermes"]["astra_ultra_profile_present"])
+
+    def test_hermes_custom_root_does_not_fall_back_to_legacy_binding(self):
+        self.auth()
+        binding = self.write(".hermes/profiles/astra-ultra/workbench-subscription.json",
+                             {"expected_account_id": "private-account-id",
+                              "codex_home": str(self.home / ".codex")})
+        binding.chmod(0o600)
+        other = self.home / "relocated/profiles/research"
+        other.mkdir(parents=True)
+        for location in (str(other.parent.parent), str(other), str(self.home / "missing")):
+            with self.subTest(location=location):
+                self.env["HERMES_HOME"] = location
+                hermes = self.diagnose()["hermes"]
+                self.assertFalse(hermes["astra_ultra_profile_present"])
+                self.assertEqual(hermes["subscription_binding"]["status"], "not_configured")
+
+    def test_hermes_invalid_relocated_binding_is_redacted_without_fallback(self):
+        token = self.auth()
+        value = {"expected_account_id": "private-account-id",
+                 "codex_home": str(self.home / ".codex")}
+        for root in (".hermes", "relocated"):
+            binding = self.write(f"{root}/profiles/astra-ultra/workbench-subscription.json", value)
+            binding.chmod(0o600)
+            self.env["HERMES_HOME"] = str(self.home / root)
+            self.assertEqual(self.diagnose()["hermes"]["subscription_binding"]["status"], "ready")
+        self.env["HERMES_HOME"] = str(self.home / "relocated ")
+        for issue, content, mode in (("malformed", "{private-malformed-binding", 0o600),
+                                     ("insecure", value, 0o644)):
+            with self.subTest(issue=issue):
+                binding = self.write("relocated /profiles/astra-ultra/workbench-subscription.json", content)
+                binding.chmod(mode)
+                report = self.diagnose()
+                self.assertTrue(report["hermes"]["astra_ultra_profile_present"])
+                self.assertEqual(report["hermes"]["subscription_binding"],
+                                 {"status": "binding_invalid", "refresh_performed": False})
+                rendered = json.dumps(report) + doctor.format_report(report)
+                for secret in (token, "private-account-id", "private-refresh-token",
+                               "private-malformed-binding", str(binding), str(self.home)):
+                    self.assertNotIn(secret, rendered)
+
     def test_hermes_changed_account_and_insecure_binding_are_metadata_only(self):
         self.auth()
         binding = self.write(".hermes/profiles/astra-ultra/workbench-subscription.json",
@@ -234,6 +365,31 @@ class DoctorTests(unittest.TestCase):
         self.assertNotIn(str(self.home), doctor.format_report(report))
         external = self.diagnose()["versions"]["claude"]
         self.assertEqual(external["selected_executable"], "/synthetic/bin/claude")
+
+    def test_mcp_inventory_is_one_names_only_line_per_harness(self):
+        self.write(".claude.json", {"mcpServers": {"agentlayer": {"command": "private-mcp-command", "args": ["private-argument"]}},
+                                    "oauthAccount": {"emailAddress": "private-person@example.invalid"}})
+        self.write(".codex/config.toml", '[mcp_servers.docs]\nurl = "https://private.example/mcp"\nenabled = false\n'
+                                         '[mcp_servers.agentlayer]\ncommand = "private-mcp-command"\n')
+        self.write(".hermes/config.yaml", "{mcp_servers: {telescope: {command: private-mcp-command, enabled: true}}}\n")
+        self.write("relocated/profiles/astra-ultra/config.yaml", "mcp_servers:\n  agenttool:\n    headers: {Authorization: private-token}\n")
+        report = self.diagnose()
+        self.assertEqual(list(report["mcp_servers"]), ["codex", "claude", "hermes", "hermes-astra-ultra"])
+        text = doctor.format_report(report)
+        self.assertIn("MCP servers for codex (configured names only): docs (disabled), agentlayer [unverified]", text)
+        self.assertIn("MCP servers for claude (configured names only): agentlayer [unverified]", text)
+        self.assertIn("MCP servers for hermes (configured names only): telescope [unverified]", text)
+        self.assertIn("MCP servers for hermes-astra-ultra (configured names only): none [incomplete]; No Hermes configuration at "
+                      "~/.hermes/profiles/astra-ultra/config.yaml", text)
+        self.env["HERMES_HOME"] = str(self.home / "relocated")
+        report = self.diagnose()
+        text = doctor.format_report(report)
+        self.assertIn("MCP servers for hermes-astra-ultra (configured names only): agenttool [unverified]", text)
+        rendered = json.dumps(report) + text
+        for secret in ("private-mcp-command", "private-argument", "private.example", "private-token",
+                       "private-person@example.invalid", str(self.home)):
+            self.assertNotIn(secret, rendered)
+        self.assertFalse(any("hermes" in argv[0] for argv, _ in self.calls))
 
     def test_listener_metadata_is_observed_without_process_environment(self):
         self.session()

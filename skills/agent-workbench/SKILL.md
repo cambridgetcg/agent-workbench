@@ -11,6 +11,10 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   settings provenance, instruction-file presence and plugin version drift, or
   `explain --harness HARNESS` for executable/version/help evidence. These are not
   full native effective configuration or proof that instructions were loaded.
+  `doctor` and `explain --harness` also name the MCP servers (for example
+  AgentTool Collab) a harness child would inherit, without commands or
+  environment. `incomplete` or `unparsed` means some configuration could not
+  be read: check the warnings rather than assuming there are none.
   `--probe` checks only existing loopback gateways; it does not call a model.
   Never read raw auth files or request logs merely to elaborate a doctor report.
   Each attempt records launch evidence; inspect it with `launch RUN TASK` when
@@ -34,6 +38,10 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   with `run --timeout`, default 1800 seconds, longer still; `run` warns when it
   cannot reach a budget) map to Hermes chat flags; failed native file edits
   surface as result warnings.
+  Check the native tool workspace, not just subprocess cwd: Hermes prefers
+  `TERMINAL_CWD`, so the runner binds it to the prepared task path, including
+  worktrees. Reproduce workspace issues with relative file access rather than
+  masking them with an explicit tool workdir. Keep native approval safeguards.
   Use the token helper's `--check` interface for auth diagnostics; its normal
   stdout is a private credential protocol and must never be run in a terminal
   or included in logs, prompts or reports. See the [Hermes integration guide](../../docs/hermes.md).
@@ -55,6 +63,14 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   drains active tasks; `stop` terminates owned active process groups. Failure
   interrupts active peers. `steer` queues guidance for the next agent task that
   starts, not a particular currently running task.
+- Workbench writes nothing to AgentTool Collab. `run --collab-context` adds a
+  short Workbench-written block to that invocation's agent prompts: run, task and
+  attempt IDs, harness, a suggested actor label
+  `<harness> · workbench <run8>/<task>#<attempt>` and Collab guidance. It is not
+  saved, so repeat it when continuing or retrying; launch records show
+  `collab_context_included` (the prepared prompt, not delivery). A Workbench
+  `succeeded` is a process receipt, never Collab completion or acceptance, and
+  Workbench never ends a session an agent started.
 - Opt into `--adapter duplex` only for Claude/Astra-compatible tasks needing live
   controls. A runtime handshake must succeed before the prompt is sent. Use
   `send RUN TASK TEXT --request-id ID` or `interrupt RUN TASK --request-id ID`

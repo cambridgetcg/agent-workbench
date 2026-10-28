@@ -383,8 +383,10 @@ def _git(project, *args):
     A helper that deliberately creates a new session is outside this process
     group, just as for native task process groups; this is not an OS sandbox.
     GIT_OPTIONAL_LOCKS=0 keeps status from taking a source checkout's index
-    lock that a concurrent writer may need.
+    lock that a concurrent writer may need. Hooks are repository code, so like
+    native launches they do not inherit the host session's variables.
     """
+    from .processes import native_environment
     from .runner import _terminate_group
     process = None
     selector = selectors.DefaultSelector()
@@ -396,7 +398,7 @@ def _git(project, *args):
         spawn = owner.spawn if owner is not None else subprocess.Popen
         process = spawn(["git", "-C", str(project), *args], stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+                        env={**native_environment(), "GIT_OPTIONAL_LOCKS": "0"},
                         start_new_session=True, close_fds=True)
         for stream in (process.stdout, process.stderr):
             os.set_blocking(stream.fileno(), False)

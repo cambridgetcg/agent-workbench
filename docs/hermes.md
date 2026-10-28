@@ -102,6 +102,45 @@ retain native defaults. Workbench rejects the Claude-specific `ultracode` effort
 for Hermes and currently exposes `low`, `medium`, `high`, `xhigh`, `max`, `ultra`.
 Hermes's additional `none` and `minimal` settings remain available in Hermes.
 
+The runner supplies the prepared task workspace as both process cwd and
+`TERMINAL_CWD`. Hermes tools and project-instruction discovery prefer that
+environment value, so an inherited controller directory must not override the
+task's project or retained worktree. Read-only mode remains a declaration, not
+a sandbox. Native unattended approval rules remain unchanged.
+
+`doctor` resolves Astra Ultra within the installation selected by `HERMES_HOME`,
+whether it names the installation root or an already-selected profile. A
+`subscription_binding: not_configured` result describes only the optional
+Workbench binding file; it does not prove native provider authentication is
+missing or broken. Verify authentication through the intended native workflow.
+
+`doctor`, `explain --harness` and launch records list the profile's MCP servers
+by name, for example an AgentTool Collab server, with `enabled`, `trust` and the
+`tools.include` count. `hermes` uses the profile named by `HERMES_HOME`, else
+the sticky `active_profile`, else the home. `hermes-astra-ultra` uses
+`profiles/astra-ultra` in that installation. Block- and flow-style `config.yaml`
+are both read by a minimal stdlib parser. Constructs it does not interpret among
+those fields (anchors or merge keys, in block or flow style, for example) and
+`enabled` or `tools.include` values whose meaning depends on the YAML loader
+(such as `0.0` or `n`) are reported as `unparsed`, never guessed. YAML that
+Hermes rejects can still be read here, while Hermes falls back to its
+last-known-good configuration. Plugin-provided and managed-scope servers are not
+listed, and `HERMES_SAFE_MODE` disables them all natively. A custom wrapper that
+sets its own `HERMES_HOME` is not run, so an absent profile there is reported as
+`incomplete`, not as having no servers.
+
+`run RUN_ID --collab-context` gives each Hermes prompt in that invocation its
+run, task and attempt IDs and a suggested Collab actor label such as
+`hermes-astra-ultra · workbench 3f9c2a7b/review#1`; Workbench itself writes
+nothing to Collab. Hermes `delegate_task` children run inside the parent's
+process and share its MCP server process, which binds one Collab session: a
+child's session start is refused once the parent holds one, and would otherwise
+bind the shared process under the child's label. Their Collab calls count as the
+parent's. That is why the block tells in-process sub-agents not to start a
+session, while a separate agent process the task launches may start its own,
+with the parent's session ID as `parent_session_id`. Whether a task can reach
+Collab at all depends on the profile's MCP servers, not on this option.
+
 Success requires process exit zero and exactly one valid native terminal result
 with exit code zero, text and a session identifier. Recoverable individual tool
 errors do not prematurely end a task. When Hermes appends its file-mutation

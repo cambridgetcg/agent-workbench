@@ -16,6 +16,8 @@ runtime upgrade is required for these interfaces.
 - `explain --harness HARNESS` records PATH candidates, selected executable,
   version and advertised interfaces. Native help evidence is kept separate from
   protocol acknowledgments. Missing, unreadable and unverified data stay explicit.
+  Its MCP inventory, like `doctor`'s, opens `~/.claude.json` for Claude-family
+  harnesses; that file also holds account state, and only server names leave it.
 - Each attempt stores private `launch.json` before execution and uses the selected
   absolute entry point. `launch RUN TASK [--attempt ID]` inspects that evidence.
 - Astra wrappers are not executed during discovery. Their Claude PATH candidate

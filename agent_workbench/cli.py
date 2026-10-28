@@ -209,6 +209,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout", type=float, default=1800, help="Overall wall-time limit in seconds")
     run.add_argument("--max-launches", type=int, default=20, help="Maximum task subprocess launches in this invocation")
     run.add_argument("--jobs", type=int, default=1, help="Concurrent tasks, 1–16; shared writers still serialize")
+    run.add_argument("--collab-context", action="store_true",
+                     help="Add run lineage and Collab guidance to this invocation's agent prompts (not saved; repeat on later runs)")
     for action, help_text in [("pause", "Pause between tasks"), ("stop", "Stop the owned active task and its ordinary descendants"), ("recover", "Mark a stale controller interrupted without rerunning work")]:
         sub.add_parser(action, help=help_text).add_argument("run_id")
     steer = sub.add_parser("steer", help="Queue guidance for the next agent task, not the active turn")
@@ -352,7 +354,8 @@ def main(argv=None) -> int:
                 print(f"agent-workbench: warning: task {safe_terminal(late['task_id'])} has a Hermes run budget of "
                       f"{late['run_budget_seconds']} s, but run --timeout {args.timeout:g} s stops the run first, "
                       "so Hermes cannot wrap up; raise --timeout above the budget.", file=sys.stderr)
-            state = run_workflow(store, args.run_id, timeout_seconds=args.timeout, max_launches=args.max_launches, jobs=args.jobs)
+            state = run_workflow(store, args.run_id, timeout_seconds=args.timeout, max_launches=args.max_launches, jobs=args.jobs,
+                                 collab_context=args.collab_context)
             print_status(state)
             return 0 if state["status"] == "succeeded" else 1 if state["status"] == "failed" else 2
         elif args.command in {"pause", "stop", "steer"}:

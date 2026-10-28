@@ -54,8 +54,13 @@ agent-workbench explain --harness claude --project /path/to/project
 The default doctor reads selected metadata and checks installed versions, except
 Hermes: its version command can check for updates, so doctor reports presence only. It
 does not log in, refresh credentials, make inference requests, or inspect other
-processes' environments. `--probe` sends authenticated health requests only to
-existing loopback gateways. It never follows a redirect to another host.
+processes' environments. Hermes profile discovery respects `HERMES_HOME`, whether
+it names a relocated installation root or a directory under `profiles/`. The
+Astra Ultra profile and its optional subscription binding are checked within
+that installation only; an explicit custom home never falls back to another
+installation's binding. An unset or blank value keeps the `~/.hermes` default.
+`--probe` sends authenticated health requests only to existing loopback gateways.
+It never follows a redirect to another host.
 Configuration shown is a partial local view: native session flags, managed
 policies and another process's environment may change the effective settings.
 Configured effort is labeled separately from observed request behavior.
@@ -68,9 +73,33 @@ file presence, hook/permission counts and plugin registration/cache/source
 versions. It does not open instruction bodies or authentication files, execute
 plugins, resolve every native merge rule, or claim a file was loaded by an agent.
 `explain --harness` also resolves the executable and probes native version/help.
+For Claude and the Astra wrappers it also opens `~/.claude.json` for MCP server
+names, as described below.
 Help evidence and observed runtime acknowledgments remain separate. Astra
 wrappers are not executed during discovery; their native PATH child is a candidate
 whose forwarding and lifecycle must still be verified.
+
+Before a run, `doctor` prints one line per harness naming the MCP servers its
+child would inherit from native configuration. `explain --harness` (JSON
+`mcp_servers`) and each attempt's launch record carry the same inventory. It
+contains server names only, plus Codex `enabled`/`enabled_tools` count and
+Hermes `enabled`/`trust`/`tools.include` count. It never shows commands,
+arguments, environment, URLs or headers. Claude names come from `~/.claude.json`
+(user scope and this project's entry) and `.mcp.json` files. Claude Code also
+keeps account state in `~/.claude.json`, and it can hold a saved API key:
+Workbench parses it in memory, only `mcpServers` names leave it, and the
+inventory's `account_state_file_read` records the read. Codex names come from
+`config.toml`. Hermes names come from the selected profile's `config.yaml`, read
+by a minimal stdlib parser. It reports `unparsed` for constructs it does not
+interpret among the fields it decodes, and for `enabled` or `tools.include`
+values whose meaning depends on Hermes's YAML loader. YAML that Hermes rejects
+can still be read here, while Hermes falls back to its last-known-good
+configuration. A listed server is configured, not observed. Plugins, managed
+policy, connectors, CLI flags and wrappers can change the set, and `incomplete`
+marks a source that could not be inspected. The bundled `hermes-astra-ultra`
+launcher selects `profiles/astra-ultra` in the `HERMES_HOME` installation, which
+is what Workbench inspects. A wrapper that sets its own `HERMES_HOME` is not
+run, so its profile remains a candidate.
 
 Before each attempt, the runner records a private `launch.json` and uses the
 selected absolute entry point. This explains PATH drift between shells without
@@ -146,7 +175,11 @@ host session's identity and messaging variables: `CLAUDECODE`, `CLAUDE_PID`,
 `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`,
 every `CLAUDE_CODE_MESSAGING_` variable, and Codex's `CODEX_CI`,
 `CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_TOOL_CALL_ID`,
-`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`. Other environment variables, including API
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, and AgentTool
+Collab's `AGENTOOL_COLLAB_SESSION_FILE`, `AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY`
+and `AGENTOOL_COLLAB_CLAUDE_PID` (a child resuming the host's session file would
+fence the host). `AGENTOOL_COLLAB_DB` only selects the journal and is kept. Git
+hooks run while Workbench prepares or inspects a worktree do not inherit them either. Other environment variables, including API
 keys, are inherited; a task's launch record lists the removed names. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise
@@ -229,6 +262,50 @@ Workbench never removes a worktree on its own; any automatic cleanup built on
 it should accept exactly a clean tree with HEAD on a remote-tracking ref.
 Incomplete checkout preparation also remains recorded for inspection and is
 refused by this cleanup command.
+
+## Trace Collab sessions to a run
+
+Workbench writes nothing to an AgentTool Collab journal. So that a session an
+agent chooses to start can be traced back to its run, opt in per invocation:
+
+```sh
+agent-workbench run RUN_ID --collab-context
+```
+
+Each agent prompt this invocation launches then carries a short Workbench-written
+block after the goal and before any predecessor record: the run ID (first eight
+characters and full), task ID, attempt number and ID, harness, a suggested actor
+label such as `hermes-astra-ultra · workbench 3f9c2a7b/review#2`, and six fixed
+lines of guidance, each with its reason: Collab is optional, and nothing ends
+the session for the agent, so it ends its own once any handoff it offered is
+answered; sub-agents inside its process share its session and must not start
+one, while a separate agent process it launches may start its own with the
+agent's session ID as `parent_session_id`; no self-review, and a session from the
+same run, an earlier attempt or a launched delegate is distinct but not
+independent; a Workbench `succeeded` is a process receipt, not Collab completion
+or acceptance; leases expire and need renewing; and only brief coordination
+facts belong in the journal, never prompts, secrets, continuity notes,
+transcripts or raw output. It holds no paths, prompt text or credentials.
+Command tasks get no prompt, so no block.
+
+Like `--timeout`, `--max-launches` and `--jobs`, the option is not saved with
+the run: pass it again when continuing, retrying or resuming. The `run_started`
+event records `collab_context`. Each attempt that reaches launch inspection
+records `collab_context_included` in its launch record; it describes the
+prepared prompt, not delivery, so an attempt that stops before its harness reads
+the prompt still records true. An attempt that fails earlier, such as while
+preparing its worktree, has no launch record; its invocation's `run_started`
+event still shows the option. Without the option prompts are unchanged; exports
+and handoffs never carry it. The label is a self-declared display name,
+traceable by convention but not proof of which process started a session. The
+block neither starts a session nor grants Collab tools: those come from the
+harness's own MCP configuration (`explain --harness` names the servers).
+
+Workbench never ends a Collab session either. One started by an attempt that is
+stopped, times out or fails stays active, and its leases hold until they expire
+and then need explicit recovery. Find it by its label in Collab's workspace
+status and, after checking what it left, end it from the host with
+`agenttool-collab-host end --session-file <its session file> --reason <text> --release-leases`.
 
 ## Control and recover
 

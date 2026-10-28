@@ -36,6 +36,9 @@ elif mode in ("stdout-flood", "stderr-flood"):
         os.write(descriptor, b"PRIVATE_HELPER_BODY" * 4096)
 elif mode == "optional-locks":
     print(os.environ.get("GIT_OPTIONAL_LOCKS", "unset"), flush=True)
+elif mode == "host-session":
+    print(" ".join(key for key in ("AGENTOOL_COLLAB_SESSION_FILE", "AGENTOOL_COLLAB_CLAUDE_PID", "CLAUDE_CODE_MESSAGING_TOKEN",
+                                   "AGENTOOL_COLLAB_DB") if key in os.environ), flush=True)
 else:
     print("selected-metadata", flush=True)
 '''
@@ -112,6 +115,12 @@ class GitHelperSafetyTests(unittest.TestCase):
     def test_helpers_never_take_optional_index_locks(self):
         os.environ["WORKBENCH_GIT_FIXTURE"] = "optional-locks"
         self.assertEqual(workspaces._git(self.root, "status", "--porcelain"), "0")
+
+    def test_helpers_and_their_hooks_do_not_inherit_the_host_session(self):
+        os.environ.update(WORKBENCH_GIT_FIXTURE="host-session", AGENTOOL_COLLAB_SESSION_FILE="/synthetic/session.json",
+                          AGENTOOL_COLLAB_CLAUDE_PID="4242", CLAUDE_CODE_MESSAGING_TOKEN="synthetic-token",
+                          AGENTOOL_COLLAB_DB="/synthetic/collab.sqlite")
+        self.assertEqual(workspaces._git(self.root, "status", "--porcelain"), "AGENTOOL_COLLAB_DB")
 
     def test_stdout_and_stderr_capture_are_bounded(self):
         for mode in ("stdout-flood", "stderr-flood"):

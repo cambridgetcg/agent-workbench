@@ -53,9 +53,24 @@ native session pointers, bounded public events and control receipts.
 
 ## Runner API (`runner.py`)
 
-`run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1) -> dict`
+`run_workflow(store, run_id, *, timeout_seconds=1800, max_launches=20, jobs=1, collab_context=False) -> dict`
 executes dependency-ready tasks with 1–16 bounded workers, preserving
-already-succeeded tasks. Its `run_started` event lists
+already-succeeded tasks. `collab_context` (a bool) applies to this invocation
+only: it is held in the live `controller` record, which release clears, and
+recorded as the `run_started` event's `collab_context`. When true, each agent
+attempt's prompt gets a Workbench-written lineage block after the goal and
+before predecessor blocks: run ID (8-character prefix and full), task ID,
+attempt number and ID, harness, the suggested Collab actor label
+`<harness> · workbench <run8>/<task>#<attempt>` and six fixed guidance lines,
+each with its reason, with no paths, prompt text or credentials. Launch evidence
+(`launch.json` and the attempt's `launch` summary) records
+`collab_context_included` for every attempt that reaches launch inspection;
+command tasks record false. It describes the prepared prompt, not delivery. An
+attempt that fails earlier has no launch record; the `run_started` event still
+shows the option. When false, prompts are byte-for-byte unchanged.
+Workbench writes nothing to Collab, ends no session and adds no manifest, task
+or handoff field.
+The `run_started` event also lists
 `budgets_beyond_run_timeout(state, timeout_seconds)`: pending tasks whose Hermes
 `run_budget_seconds` is not shorter than the invocation's limit, which would end
 the run before Hermes could wrap up; the CLI also warns about them before running
@@ -75,9 +90,12 @@ Codex sandbox flag value or None. `processes.native_environment()` omits the
 launching host session's identity and messaging variables
 (`HOST_SESSION_ENV`, which includes Codex's `CODEX_CI`, `CODEX_SESSION_ID`,
 `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_TOOL_CALL_ID`,
-`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
-credentials, `CODEX_SANDBOX*` and Codex's network proxy variables stay) for tasks, plugin
-evaluations and mod checks; a task's launch record lists the removed names.
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, AgentTool Collab's
+`AGENTOOL_COLLAB_SESSION_FILE`, `AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY` and
+`AGENTOOL_COLLAB_CLAUDE_PID`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
+credentials, `CODEX_SANDBOX*`, Codex's network proxy variables and `AGENTOOL_COLLAB_DB` stay) for tasks, plugin
+evaluations, mod checks and Workbench's Git helpers (whose hooks are repository
+code); a task's launch record lists the removed names.
 Launch inspection passes `update_check=False`, so Hermes's update-checking
 `--version` is not probed during runs.
 Each agent prompt receives at most eight recent notes within an 8,000-character
@@ -236,7 +254,10 @@ read-only allowlisted metadata: versions, auth freshness, selected config values
 with provenance, actual-vs-requested effort, active Astra local proxies. Default
 does not make inference or network calls. Optional probe only configured loopback
 health endpoints, no model calls. Distinguish inferred, configured and observed.
-`format_report(report) -> str`. No token/account-ID/email output.
+`mcp_servers` holds `mcp_inventory` results for `codex`, `claude` (which also
+covers the Astra wrappers), `hermes` and `hermes-astra-ultra`.
+`format_report(report) -> str` prints one MCP line per harness. No
+token/account-ID/email output.
 
 ## Launch/configuration evidence (`capabilities.py`)
 
@@ -248,7 +269,50 @@ not proof of what the wrapper launches. Capability evidence distinguishes
 advertised interfaces from runtime control acknowledgments and unavailable data.
 Hermes version probes may check upstream for updates; the default doctor skips
 that probe and only reports executable presence plus read-only binding metadata.
-Hermes profile/provider configuration is not resolved by this inspection.
+Hermes provider configuration is not resolved by this inspection; `mcp_servers`
+reads only the selected profile's MCP servers (see `mcp.py`). `mcp_servers` is
+the harness's `mcp_inventory`, computed with the launch environment and the
+project as working directory. Its warnings also join the launch warnings. For
+Claude and the Astra wrappers it opens `.claude.json`, so a launch record's
+`configuration.authentication_files_read: false` describes
+`explain_configuration` only; `mcp_servers.account_state_file_read` reports that
+read.
+
+## MCP inventory (`mcp.py`)
+
+`mcp_inventory(harness, project, *, home=None, env=None, cwd=None) -> dict`
+reads native configuration files without executing anything. It returns server
+names, Codex `enabled` and `enabled_tools` count, and Hermes `enabled`, `trust`
+and `tools.include` count. Commands, arguments, environment, URLs, headers and
+tokens are never returned. Sources: Claude `.claude.json` (in
+`CLAUDE_CONFIG_DIR` or home) user scope, the project entry keyed by the
+containing Git root or project, and `.mcp.json` in each directory from just
+below the filesystem root down to the project. Claude Code also keeps account
+state in `.claude.json`, and it can hold a saved API key; the file is parsed in
+memory, only `mcpServers` names leave it, and Claude inventories set
+`account_state_file_read` when it was opened. A legacy `.config.json` in the
+Claude configuration directory, which Claude Code prefers, is not read; it makes
+the inventory `incomplete` with a warning. Codex reads `config.toml` in
+`CODEX_HOME` and the project. Hermes reads the selected profile's `config.yaml`:
+an explicit `HERMES_HOME` profile, else the sticky `active_profile`, else the
+home. For `hermes-astra-ultra` it reads `profiles/astra-ultra` within the
+`HERMES_HOME` installation, which is only a candidate because the wrapper is not
+run. `profile_selection` records which rule applied: `default_home`,
+`hermes_home`, `hermes_home_profile`, `sticky_active_profile`,
+`active_profile_uninterpretable` (the file could not be interpreted, so the
+unprofiled home was used) or `astra_ultra_wrapper_candidate`. A stdlib reader
+decodes block- and flow-style YAML only for those fields and reports `unparsed`
+rather than guessing; a server entry is `malformed` (not a mapping) or
+`unparsed` (an `enabled` or `tools.include` value whose meaning depends on
+Hermes's YAML loader). `tests/hermes_mcp_corpus.json` pins the reader against
+Hermes's readings under PyYAML and under its ruamel YAML 1.1 loader. Each
+source's `server_count` is the number it declares; `listed_server_count` counts
+the rows listed across sources (at most 100 per source, and a name in several
+scopes once per scope). `status` is `unverified` (configured, not observed),
+`not_configured` or `incomplete` (a source or entry could not be inspected, a
+source declared more than 100 servers, or the wrapper's profile was absent; see
+`warnings`). Plugins, managed policy, connectors, CLI flags and wrappers can
+change the native set.
 
 ## Subscription bridge (`codex_token.py`)
 
@@ -362,7 +426,7 @@ workspaces RUN
 workspace-remove RUN TASK ATTEMPT
 timeline RUN [--limit N] [--json]
 plan RUN
-run RUN [--timeout N] [--max-launches N] [--jobs N]
+run RUN [--timeout N] [--max-launches N] [--jobs N] [--collab-context]
 send RUN TASK TEXT [--request-id ID]
 interrupt RUN TASK [--request-id ID]
 pause RUN
