@@ -80,9 +80,10 @@ def _report(sources: list, limitations: list, warnings: list, *, incomplete: boo
         if row["server_count"] > len(row["servers"]):
             warnings.append(f"Only the first {_MAX_ROWS} MCP servers in {row['source']} are listed.")
         incomplete = incomplete or row["status"] not in {"read", "absent"} or failed or row["server_count"] > len(row["servers"])
-    count = sum(len(row["servers"]) for row in sources)
-    return {"status": "incomplete" if incomplete else "unverified" if count else "not_configured",
-            "scope": _SCOPE, **extra, "sources": sources, "server_count": count,
+    # Rows listed across sources; each source's server_count is what it declares.
+    listed = sum(len(row["servers"]) for row in sources)
+    return {"status": "incomplete" if incomplete else "unverified" if listed else "not_configured",
+            "scope": _SCOPE, **extra, "sources": sources, "listed_server_count": listed,
             "warnings": warnings, "limitations": limitations}
 
 
@@ -100,10 +101,18 @@ def mcp_inventory(harness: str, project: Path | None, *, home: Path | None = Non
     if harness in {"claude", "astra", "astra-ultra"}:
         configured = env.get("CLAUDE_CONFIG_DIR")
         label = "$CLAUDE_CONFIG_DIR/.claude.json" if configured else "~/.claude.json"
-        # This file also holds account and project state; only MCP names are taken.
+        # Unlike explain_configuration, this opens Claude Code's account state,
+        # which can also hold a saved API key. It is parsed in memory, and only
+        # MCP server names leave it; account_state_file_read reports the read.
         data, status = _read(_root(configured, home, home) / ".claude.json")
+        opened = status in {"read", "malformed", "too_large"}
         data = data or {}
-        sources = [_source(label, "user", status, data.get("mcpServers"))]
+        sources, warnings = [_source(label, "user", status, data.get("mcpServers"))], []
+        # Claude Code prefers a legacy global .config.json when one exists.
+        legacy = _root(configured, home / ".claude", home) / ".config.json"
+        if legacy.is_file():
+            warnings.append(f"{'$CLAUDE_CONFIG_DIR' if configured else '~/.claude'}/.config.json exists; "
+                            f"Claude Code may read user MCP servers from it instead of {label}.")
         if project is not None:
             # Local scope is keyed by the Git root containing the project, else the project.
             key = next((path for path in (project, *project.parents) if (path / ".git").exists()), project)
@@ -111,7 +120,8 @@ def mcp_inventory(harness: str, project: Path | None, *, home: Path | None = Non
             entry = projects.get(key.as_posix()) if isinstance(projects, dict) else None
             if isinstance(entry, dict) and "mcpServers" in entry:
                 sources.append(_source(f"{label} projects[{_label(key, home, project)}]", "local", "read", entry["mcpServers"]))
-            for directory in reversed([project, *project.parents]):
+            # Like Claude Code, walk down from below the filesystem root to the project.
+            for directory in reversed([project, *project.parents][:-1]):
                 shared, shared_status = _read(directory / ".mcp.json")
                 if shared_status != "absent":
                     sources.append(_source(_label(directory / ".mcp.json", home, project), "project",
@@ -119,7 +129,7 @@ def mcp_inventory(harness: str, project: Path | None, *, home: Path | None = Non
         limitations = ["Plugins, managed MCP policy, claude.ai connectors and --mcp-config can add servers; per-project disables and .mcp.json approvals are not resolved."]
         if harness != "claude":
             limitations.append("The Astra wrapper was not executed; it may select another configuration directory or MCP flags.")
-        return _report(sources, limitations, [])
+        return _report(sources, limitations, warnings, incomplete=bool(warnings), account_state_file_read=opened)
     if harness == "codex":
         root = _root(env.get("CODEX_HOME"), home / ".codex", home)
         label = "$CODEX_HOME" if env.get("CODEX_HOME") else "~/.codex"
@@ -131,6 +141,7 @@ def mcp_inventory(harness: str, project: Path | None, *, home: Path | None = Non
             data, status = _read(path, toml=True)
             sources.append(_source(source, scope, status, (data or {}).get("mcp_servers"), _codex_server))
         return _report(sources, ["A project file applies only when Codex trusts the project. Workbench does not pass --ignore-user-config, which would drop the user file's servers.",
+                                     "Only the project's own .codex/config.toml is read; Codex may also layer those in directories between the project and its Git root.",
                                      "Plugins, profiles, managed configuration and -c overrides can change the set."], [])
     if harness not in {"hermes", "hermes-astra-ultra"}:
         raise ValueError("MCP inventory requires an agent harness")
@@ -147,7 +158,7 @@ def mcp_inventory(harness: str, project: Path | None, *, home: Path | None = Non
         name = raw.decode("utf-8-sig", "replace").strip() if raw is not None else ""
         name = "default" if name.casefold() == "default" else name.lower()
         if status not in {"read", "absent"} or name and not _HERMES_PROFILE.match(name):
-            selection = "unverified"
+            selection = "active_profile_uninterpretable"
             warnings.append("Hermes's sticky active_profile could not be interpreted; the unprofiled home was inspected.")
         elif name and name != "default":
             selected, selection = root / "profiles" / name, "sticky_active_profile"

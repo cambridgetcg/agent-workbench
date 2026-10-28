@@ -3,9 +3,11 @@
 Help is evidence that a CLI advertises an interface, never proof that a provider,
 account, or running process supports its protocol. Authentication files, session
 transcripts, instruction contents, hook commands and permission patterns are not
-read or returned here. MCP server definitions are reduced to names and selected
-flags. A launch profile's absolute paths are private run metadata; the
-corresponding display fields are suitable for diagnostic output.
+read or returned here. The one exception is the launch's MCP inventory (mcp.py):
+for Claude-family harnesses it parses ~/.claude.json, which also holds account
+state and can hold a saved API key, and keeps only MCP server names. A launch
+profile's absolute paths are private run metadata; the corresponding display
+fields are suitable for diagnostic output.
 """
 from __future__ import annotations
 
@@ -68,7 +70,7 @@ def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
         return None, status
     try:
         value = tomllib.loads(raw.decode("utf-8")) if toml else json.loads(raw)
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError, UnicodeError, RecursionError):
         return None, "malformed"
     return (value, "read") if isinstance(value, dict) else (None, "malformed")
 

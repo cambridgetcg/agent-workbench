@@ -41,6 +41,7 @@ class McpInventoryTests(unittest.TestCase):
                                     "projects": {str(self.project): {"mcpServers": {"local-only": SERVER}},
                                                  str(self.home / "other"): {"mcpServers": {"other-project-server": SERVER}}}})
         self.write("project/.mcp.json", {"mcpServers": {"shared": REMOTE}})
+        self.write(".mcp.json", {"mcpServers": {"ancestor": SERVER}})
         for harness in ("claude", "astra", "astra-ultra"):
             with self.subTest(harness=harness):
                 report = self.inventory(harness)
@@ -48,8 +49,10 @@ class McpInventoryTests(unittest.TestCase):
                 self.assertEqual([(row["source"], row["scope"], [server["name"] for server in row["servers"]]) for row in report["sources"]],
                                  [("~/.claude.json", "user", ["agentlayer", "remote"]),
                                   ("~/.claude.json projects[$PROJECT]", "local", ["local-only"]),
+                                  ("~/.mcp.json", "project", ["ancestor"]),
                                   ("$PROJECT/.mcp.json", "project", ["shared"])])
-                self.assertEqual(report["server_count"], 4)
+                self.assertEqual(report["listed_server_count"], 5)
+                self.assertTrue(report["account_state_file_read"])
                 self.assertEqual(report["warnings"], [])
                 self.assertEqual(any("Astra wrapper" in text for text in report["limitations"]), harness != "claude")
                 self.assert_private(report)
@@ -66,6 +69,18 @@ class McpInventoryTests(unittest.TestCase):
         self.assertEqual([(row["source"], [server["name"] for server in row["servers"]]) for row in report["sources"]],
                          [("$CLAUDE_CONFIG_DIR/.claude.json", []),
                           ("$CLAUDE_CONFIG_DIR/.claude.json projects[~/repo]", ["repo-server"])])
+
+    def test_claude_legacy_global_config_is_flagged_not_read(self):
+        self.write(".claude.json", {"mcpServers": {"current": SERVER}})
+        self.assertFalse(self.inventory("claude")["warnings"])
+        self.write(".claude/.config.json", {"mcpServers": {"legacy-server": SERVER}})
+        report = self.inventory("claude")
+        self.assertEqual(report["status"], "incomplete")
+        self.assertIn("~/.claude/.config.json exists; Claude Code may read user MCP servers from it", report["warnings"][0])
+        self.assertNotIn("legacy-server", json.dumps(report))
+        self.env["CLAUDE_CONFIG_DIR"] = str(self.home / "elsewhere")
+        report = self.inventory("claude")
+        self.assertEqual((report["status"], report["account_state_file_read"]), ("not_configured", False))
 
     def test_codex_servers_report_enabled_and_enabled_tools_count(self):
         self.write(".codex/config.toml", '[mcp_servers.agentlayer]\ncommand = "private-command"\nargs = ["private-argument"]\n'
@@ -117,7 +132,7 @@ class McpInventoryTests(unittest.TestCase):
         self.assertEqual(selected("hermes"), ("hermes_home", "~/installation/config.yaml"))
         self.write("installation/active_profile", "../escape\n")
         report = self.inventory("hermes")
-        self.assertEqual(report["profile_selection"], "unverified")
+        self.assertEqual(report["profile_selection"], "active_profile_uninterpretable")
         self.assertIn("active_profile could not be interpreted", report["warnings"][0])
         self.env["HERMES_HOME"] = "./installation/profiles/work"
         self.assertEqual(selected("hermes", cwd=self.home), ("hermes_home_profile", "~/installation/profiles/work/config.yaml"))
@@ -127,6 +142,9 @@ class McpInventoryTests(unittest.TestCase):
         self.assertEqual(report["status"], "incomplete")
         self.assertIn("may use another installation", report["warnings"][0])
         self.assertTrue(any("wrapper was not executed" in text for text in report["limitations"]))
+        self.env["HERMES_SAFE_MODE"] = "yes"
+        line = format_report({"mcp_servers": {"hermes-astra-ultra": self.inventory("hermes-astra-ultra")}})
+        self.assertTrue(line.endswith("may use another installation. (+1 more in JSON)"))
         self.write(".hermes/profiles/astra-ultra/config.yaml", "mcp_servers: {agenttool: {trust: full}}\n")
         self.env["HERMES_SAFE_MODE"] = "1"
         report = self.inventory("hermes-astra-ultra")
@@ -146,9 +164,39 @@ class McpInventoryTests(unittest.TestCase):
         self.assertIn("could not be inspected (malformed)", codex["warnings"][0])
         self.write(".claude.json", {"mcpServers": {f"server-{number}": {} for number in range(mcp._MAX_ROWS + 1)}})
         capped = self.inventory("claude")
-        self.assertEqual((capped["status"], capped["server_count"], capped["sources"][0]["server_count"]),
+        self.assertEqual((capped["status"], capped["listed_server_count"], capped["sources"][0]["server_count"]),
                          ("incomplete", mcp._MAX_ROWS, mcp._MAX_ROWS + 1))
         self.assert_private(claude, codex)
+
+    def test_deeply_nested_files_are_malformed_not_fatal(self):
+        # A repository controls .mcp.json and .codex/config.toml in its own tree.
+        self.write("project/.mcp.json", '{"mcpServers": ' + "[" * 200_000 + "]" * 200_000 + "}")
+        self.write("project/.codex/config.toml", "mcp_servers = " + "[" * 200_000 + "]" * 200_000 + "\n")
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                report = self.inventory(harness)
+                self.assertEqual(report["status"], "incomplete")
+                self.assertEqual(report["sources"][-1]["status"], "malformed")
+
+    def test_only_mcp_configuration_files_are_opened(self):
+        self.env.update(AGENTOOL_COLLAB_SESSION_FILE=str(self.write("collab/session.json", {"token": "private-bearer-token"})),
+                        HERMES_HOME=str(self.home / ".hermes"))
+        for path in (".claude.json", ".mcp.json", "project/.mcp.json", ".codex/config.toml", ".hermes/config.yaml",
+                     ".hermes/active_profile", ".claude/.credentials.json", ".claude/sessions/1.json", ".codex/auth.json",
+                     ".hermes/auth.json", ".hermes/.env"):
+            self.write(path, {"mcpServers": {}} if path.endswith(".json") else "")
+        opened = []
+        def recorded(function):
+            def read(path, *args, **kwargs):
+                opened.append(Path(path))
+                return function(path, *args, **kwargs)
+            return read
+        with patch.object(mcp, "_read", recorded(mcp._read)), patch.object(mcp, "_read_bytes", recorded(mcp._read_bytes)):
+            for harness in ("codex", "claude", "astra", "astra-ultra", "hermes", "hermes-astra-ultra"):
+                self.inventory(harness)
+        self.assertTrue({path.name for path in opened} <= {".claude.json", ".mcp.json", "config.toml", "active_profile", "config.yaml"},
+                        sorted({path.name for path in opened}))
+        self.assertEqual(sum(path.name == ".claude.json" for path in opened), 3)
 
     def test_inventory_only_reads_files(self):
         self.write(".claude.json", {"mcpServers": {"agentlayer": SERVER}})

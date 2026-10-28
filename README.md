@@ -73,6 +73,8 @@ file presence, hook/permission counts and plugin registration/cache/source
 versions. It does not open instruction bodies or authentication files, execute
 plugins, resolve every native merge rule, or claim a file was loaded by an agent.
 `explain --harness` also resolves the executable and probes native version/help.
+For Claude and the Astra wrappers it also opens `~/.claude.json` for MCP server
+names, as described below.
 Help evidence and observed runtime acknowledgments remain separate. Astra
 wrappers are not executed during discovery; their native PATH child is a candidate
 whose forwarding and lifecycle must still be verified.
@@ -82,8 +84,11 @@ child would inherit from native configuration. `explain --harness` (JSON
 `mcp_servers`) and each attempt's launch record carry the same inventory. It
 contains server names only, plus Codex `enabled`/`enabled_tools` count. It
 never shows commands, arguments, environment, URLs or headers. Claude names come
-from `~/.claude.json` (user scope and this project's entry; nothing else is taken
-from that file) and `.mcp.json` files. Codex names come from `config.toml`.
+from `~/.claude.json` (user scope and this project's entry) and `.mcp.json`
+files. Claude Code also keeps account state in `~/.claude.json`, and it can hold
+a saved API key: Workbench parses it in memory, only `mcpServers` names leave
+it, and the inventory's `account_state_file_read` records the read. Codex names
+come from `config.toml`.
 Hermes's selected profile `config.yaml` is located but, because the standard
 library has no YAML parser, reported as `not_inspected`. A listed server is
 configured, not observed. Plugins, managed policy, connectors, CLI flags and

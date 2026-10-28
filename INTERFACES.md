@@ -254,10 +254,14 @@ not proof of what the wrapper launches. Capability evidence distinguishes
 advertised interfaces from runtime control acknowledgments and unavailable data.
 Hermes version probes may check upstream for updates; the default doctor skips
 that probe and only reports executable presence plus read-only binding metadata.
-Hermes profile/provider configuration is not resolved by this inspection.
-`mcp_servers` is the harness's `mcp_inventory`, computed with the launch
-environment and the project as working directory. Its warnings also join the
-launch warnings.
+Hermes provider configuration is not resolved by this inspection; `mcp_servers`
+only locates the selected profile (see `mcp.py`). `mcp_servers` is the
+harness's `mcp_inventory`, computed with the launch environment and the project
+as working directory. Its warnings also join the launch warnings. For Claude and
+the Astra wrappers it opens `.claude.json`, so a launch record's
+`configuration.authentication_files_read: false` describes
+`explain_configuration` only; `mcp_servers.account_state_file_read` reports that
+read.
 
 ## MCP inventory (`mcp.py`)
 
@@ -266,17 +270,29 @@ reads native configuration files without executing anything. It returns
 server names and Codex `enabled` and `enabled_tools` count. Commands, arguments,
 environment, URLs, headers and tokens are never returned. Sources: Claude
 `.claude.json` (in `CLAUDE_CONFIG_DIR` or home) user scope, the project entry
-keyed by the containing Git root or project, and `.mcp.json` from the root
-down to the project. Codex reads `config.toml` in `CODEX_HOME` and the
-project. Hermes locates the selected profile's `config.yaml`: an explicit
-`HERMES_HOME` profile, else the sticky `active_profile`, else the home. For
-`hermes-astra-ultra` it uses `profiles/astra-ultra` within the `HERMES_HOME`
-installation, which is only a candidate because the wrapper is not run. The
-standard library has no YAML parser, so an existing file is `not_inspected`.
-`status` is `unverified` (configured, not observed), `not_configured` or
-`incomplete` (a source or entry could not be inspected, or the wrapper's
-profile was absent; see `warnings`). Plugins, managed policy, connectors, CLI
-flags and wrappers can change the native set.
+keyed by the containing Git root or project, and `.mcp.json` in each directory
+from just below the filesystem root down to the project. Claude Code also keeps
+account state in `.claude.json`, and it can hold a saved API key; the file is
+parsed in memory, only `mcpServers` names leave it, and Claude inventories set
+`account_state_file_read` when it was opened. A legacy `.config.json` in the
+Claude configuration directory, which Claude Code prefers, is not read; it
+makes the inventory `incomplete` with a warning. Codex reads `config.toml` in
+`CODEX_HOME` and the project. Hermes locates the selected profile's
+`config.yaml`: an explicit `HERMES_HOME` profile, else the sticky
+`active_profile`, else the home. For `hermes-astra-ultra` it uses
+`profiles/astra-ultra` within the `HERMES_HOME` installation, which is only a
+candidate because the wrapper is not run. `profile_selection` records which
+rule applied: `default_home`, `hermes_home`, `hermes_home_profile`,
+`sticky_active_profile`, `active_profile_uninterpretable` (the file could not
+be interpreted, so the unprofiled home was used) or
+`astra_ultra_wrapper_candidate`. The standard library has no YAML parser, so an
+existing file is `not_inspected`. Each source's `server_count` is the number it
+declares; `listed_server_count` counts the rows listed across sources (at most
+100 per source, and a name in several scopes once per scope). `status` is
+`unverified` (configured, not observed), `not_configured` or `incomplete` (a
+source or entry could not be inspected, a source declared more than 100
+servers, or the wrapper's profile was absent; see `warnings`). Plugins, managed
+policy, connectors, CLI flags and wrappers can change the native set.
 
 ## Subscription bridge (`codex_token.py`)
 

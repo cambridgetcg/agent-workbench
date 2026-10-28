@@ -49,7 +49,7 @@ def _load(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
         return (parsed, "read") if isinstance(parsed, dict) else (None, "malformed")
     except FileNotFoundError:
         return None, "absent"
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError, UnicodeError, RecursionError):
         return None, "malformed"
     except OSError:
         return None, "unreadable"

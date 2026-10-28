@@ -157,6 +157,37 @@ class CapabilityTests(unittest.TestCase):
         for secret in ("private-mcp-command", "private-env", "private.example", "private-argument"):
             self.assertNotIn(secret, rendered)
 
+    def test_launch_inspection_opens_account_state_only_for_mcp_names(self):
+        from agent_workbench import mcp
+        self.executable()
+        self.write(".claude.json", {"mcpServers": {"agentlayer": {"command": "private-mcp-command"}},
+                                    "primaryApiKey": "sk-private-api-key", "oauthAccount": {"emailAddress": "private-person@example.invalid"}})
+        self.write(".claude/.credentials.json", {"private-credential": "secret"})
+        self.write(".codex/auth.json", {"private-credential": "secret"})
+        explained, inventoried = [], []
+        def recorded(function, opened):
+            def read(path, *args, **kwargs):
+                opened.append(path.name)
+                return function(path, *args, **kwargs)
+            return read
+        with patch.object(capabilities, "_read", recorded(capabilities._read, explained)), \
+                patch.object(mcp, "_read", recorded(mcp._read, inventoried)):
+            profile = self.inspect()
+        self.assertTrue(explained)
+        self.assertFalse({".claude.json", ".credentials.json", "auth.json"} & set(explained))
+        self.assertEqual(inventoried.count(".claude.json"), 1)
+        self.assertFalse({".credentials.json", "auth.json"} & set(inventoried))
+        self.assertFalse(profile["configuration"]["authentication_files_read"])
+        self.assertTrue(profile["mcp_servers"]["account_state_file_read"])
+        for secret in ("sk-private-api-key", "private-person@example.invalid", "private-mcp-command"):
+            self.assertNotIn(secret, json.dumps(profile))
+
+    def test_launch_inventory_resolves_a_relative_hermes_home_against_the_project(self):
+        self.executable(name="hermes")
+        self.env["HERMES_HOME"] = "hermes-relative"
+        inventory = self.inspect({"harness": "hermes"})["mcp_servers"]
+        self.assertEqual(inventory["profile"], "~/project/hermes-relative")
+
     def test_launch_inspection_can_skip_hermes_update_checking_version(self):
         self.executable(name="hermes")
         self.executable(name="codex")
