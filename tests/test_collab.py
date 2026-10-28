@@ -366,6 +366,56 @@ class JournalResolutionTests(CollabTestCase):
         self.register_hermes(body="mcp_servers:\n  agenttool:\n    <<: *base\n")
         self.assertEqual(self.resolve("hermes-astra-ultra")["failure"], "registration_unparsed")
 
+    def test_a_profile_directory_hermes_home_resolves_like_hermes(self):
+        # Hermes's profile mode exports HERMES_HOME=<root>/profiles/<name>, and
+        # its terminal children inherit it; the root is then two levels up.
+        build_journal(self.journal).close()
+        self.register_hermes()
+        profile = self.home / ".hermes/profiles/astra-ultra"
+        for harness in ("hermes", "hermes-astra-ultra"):
+            with self.subTest(harness=harness):
+                resolved = self.resolve(harness, HERMES_HOME=str(profile))
+                self.assertEqual((resolved["failure"], resolved["real"]), (None, str(self.journal)))
+        self.assertEqual(self.resolve("hermes", HERMES_HOME=str(profile))["config"], "$HERMES_HOME/config.yaml")
+        self.assertEqual(self.resolve("hermes-astra-ultra", HERMES_HOME=str(profile))["config"],
+                         "~/.hermes/profiles/astra-ultra/config.yaml")
+        # Hermes trusts a profile-directory HERMES_HOME without reading active_profile.
+        (self.home / ".hermes/active_profile").write_text("../escape\n")
+        self.assertEqual(self.resolve("hermes", HERMES_HOME=str(profile))["real"], str(self.journal))
+        other = self.root / "share" / "coder.sqlite"
+        self.register_hermes(profile="coder", active=None, db=other)
+        coder = self.home / ".hermes/profiles/coder"
+        self.assertEqual(self.resolve("hermes", HERMES_HOME=str(coder))["real"], str(other))
+        self.assertEqual(self.resolve("hermes-astra-ultra", HERMES_HOME=str(coder))["real"], str(self.journal))
+        report = collab.agenttool_report(home=self.home, env={**self.env, "HERMES_HOME": str(profile)})
+        for harness in ("hermes", "hermes-astra-ultra"):
+            self.assertIs(report["harnesses"][harness]["collab"]["registered"], True)
+            self.assertEqual(report["harnesses"][harness]["collab"]["journal"]["kind"], "sqlite_collab")
+        self.assertEqual(report["harnesses"]["hermes"]["profile"], "astra-ultra")
+        # A custom root (not under ~/.hermes) behaves the same way.
+        custom = self.root / "hermes-root"
+        (custom / "profiles" / "astra-ultra").mkdir(parents=True)
+        (custom / "profiles" / "astra-ultra" / "config.yaml").write_text((profile / "config.yaml").read_text())
+        for value in (custom, custom / "profiles" / "astra-ultra"):
+            self.assertEqual(self.resolve("hermes-astra-ultra", HERMES_HOME=str(value))["real"], str(self.journal))
+        self.assertEqual(self.resolve("hermes", HERMES_HOME=str(custom))["failure"], "collab_not_registered")
+        (custom / "active_profile").write_text("astra-ultra\n")
+        self.assertEqual(self.resolve("hermes", HERMES_HOME=str(custom))["real"], str(self.journal))
+
+    def test_active_profile_is_read_as_hermes_reads_it(self):
+        self.register_hermes(db=self.root / "profile.sqlite")
+        self.register_hermes(profile="default", active=None, db=self.root / "default.sqlite")
+        active = self.home / ".hermes/active_profile"
+        for content, expected in ((b"\xef\xbb\xbfastra-ultra\n", "profile"), (b"Astra-Ultra\n", "profile"),
+                                  (b"", "default"), (b"\n", "default"), (b"Default\n", "default")):
+            with self.subTest(content=content):
+                active.write_bytes(content)
+                self.assertEqual(self.resolve("hermes")["real"], str(self.root / f"{expected}.sqlite"))
+        for content in (b"astra.ultra\n", b"\xff\xfe\n", b"a/b\n"):
+            with self.subTest(content=content):
+                active.write_bytes(content)
+                self.assertEqual(self.resolve("hermes")["failure"], "hermes_profile_invalid")
+
     def test_scanner_reads_only_the_column_zero_mcp_servers_block(self):
         text = ("providers:\n  p:\n    key_cmd: SENTINEL_KEY_CMD\nmcp_servers:\n  agenttool:\n    command: bun\n"
                 "    args:\n      - run\n      - 'it''s.js'\n    env:\n      AGENTOOL_COLLAB_DB: \"/j.sqlite\"  # journal\n"

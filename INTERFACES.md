@@ -257,9 +257,14 @@ command is started, no session is ended, and no credential file is opened.
   default path: `claude`, `astra` and `astra-ultra` read `mcpServers` in
   `$CLAUDE_CONFIG_DIR/.claude.json` (claude only, when set) or `~/.claude.json`;
   `codex` reads `mcp_servers` in `$CODEX_HOME/config.toml` (default `~/.codex`);
-  `hermes` reads the profile named in `$HERMES_HOME/active_profile` (default
-  `~/.hermes`; absent or `default` means the root `config.yaml`) and
-  `hermes-astra-ultra` the `astra-ultra` profile, through `hermes_mcp_servers`, a
+  the Hermes root is found as Hermes finds it: `$HERMES_HOME` (default
+  `~/.hermes`), or two levels up when `$HERMES_HOME` is a profile directory
+  `<root>/profiles/<name>`, which Hermes's profile mode exports to its terminals.
+  `hermes` reads such a profile directory's `config.yaml` without reading
+  `active_profile`; otherwise it reads the profile named in `<root>/active_profile`
+  (UTF-8 with an optional BOM; absent, empty or any case of `default` means the
+  root `config.yaml`; other names are lowercased and must be Hermes profile IDs).
+  `hermes-astra-ultra` always reads `<root>/profiles/astra-ultra`. Both go through `hermes_mcp_servers`, a
   scanner of the column-0 `mcp_servers:` block only (stopping at the next column-0
   key; `providers` is never read) that keeps `command`, block-list `args` and
   block-mapping `env` and reports flow style, anchors, aliases, tags, merge keys

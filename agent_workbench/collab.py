@@ -57,6 +57,7 @@ _CONFIG_LIMIT = 2 * 1024 * 1024
 _SMALL_LIMIT = 262_144
 _TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})\Z")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+_HERMES_PROFILE = re.compile(r"(?:default|[a-z0-9][a-z0-9_-]{0,63})\Z")  # Hermes's PROFILE_ID_RE
 _ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 _STATUS = re.compile(r"[a-z_]{1,32}\Z")
 _ATTEMPT_ID = re.compile(r"[a-f0-9]{32}\Z")
@@ -280,19 +281,30 @@ def _host_config(harness, home, env):
         return {"host": host, "path": root / "config.toml",
                 "label": ("$CODEX_HOME" if env.get("CODEX_HOME") else "~/.codex") + "/config.toml"}
     if host == "hermes":
-        root = _configured(env.get("HERMES_HOME"), home / ".hermes", home)
-        base = "$HERMES_HOME" if env.get("HERMES_HOME") else "~/.hermes"
+        # Hermes's profile mode exports HERMES_HOME=<root>/profiles/<name> and
+        # its terminal children inherit it. As Hermes does, take the root from
+        # two levels up and trust that directory as the active profile.
+        selected = _configured(env.get("HERMES_HOME"), home / ".hermes", home)
+        in_profile = bool(env.get("HERMES_HOME")) and selected.parent.name == "profiles"
+        root = selected.parent.parent if in_profile else selected
+        base = ("~/.hermes" if root == home / ".hermes" else "$HERMES_HOME/../.." if in_profile else "$HERMES_HOME")
         if harness == "hermes-astra-ultra":
             profile = "astra-ultra"
+        elif in_profile:
+            return {"host": host, "path": selected / "config.yaml", "label": "$HERMES_HOME/config.yaml",
+                    "profile": selected.name}
         else:
             data, status = _read_bounded(root / "active_profile", 256)
-            if status == "absent":
-                profile = "default"
-            else:
-                profile = data.decode("utf-8", "replace").strip() if data is not None else ""
-                if not _NAME.fullmatch(profile):
-                    return {"host": host, "path": None, "label": base + "/active_profile", "profile": None,
-                            "failure": "hermes_profile_invalid"}
+            try:
+                profile = "default" if status == "absent" else data.decode("utf-8-sig").strip() if data is not None else None
+            except UnicodeDecodeError:
+                profile = None
+            # Hermes's reading: empty or any case of "default" is the root, other names are lowercased.
+            if profile is not None:
+                profile = "default" if not profile or profile.casefold() == "default" else profile.lower()
+            if profile is None or not _HERMES_PROFILE.fullmatch(profile):
+                return {"host": host, "path": None, "label": base + "/active_profile", "profile": None,
+                        "failure": "hermes_profile_invalid"}
         if profile == "default":
             return {"host": host, "path": root / "config.yaml", "label": base + "/config.yaml", "profile": profile}
         return {"host": host, "path": root / "profiles" / profile / "config.yaml",
