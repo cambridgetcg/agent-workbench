@@ -687,6 +687,159 @@ def attribution(state, *, home=None, env=None):
                                           "Workbench never ends collab sessions."]}
 
 
+_JOURNAL_KINDS = {None: "sqlite_collab", "journal_schema_unknown": "sqlite_collab", "journal_not_collab": "sqlite_other",
+                  "journal_not_sqlite": "not_sqlite", "journal_missing": "missing", "journal_not_regular": "not_regular",
+                  "journal_unreadable": "unreadable", "journal_too_large": "sqlite_collab"}
+
+
+def _safe_name(name):
+    return name if isinstance(name, str) and _NAME.fullmatch(name) else "[name withheld]"
+
+
+def _env_keys(env):
+    return sorted({key if _ENV_KEY.fullmatch(key) else "[key withheld]" for key in (env or {})})
+
+
+def _nearby(program, filename, levels):
+    """Parse the first ``filename`` in a program's directory or its parents."""
+    if not isinstance(program, str) or not os.path.isabs(program):
+        return None
+    directory = os.path.dirname(program)
+    for _ in range(levels):
+        data, status = _read_bounded(os.path.join(directory, filename), _SMALL_LIMIT)
+        if status != "absent":
+            try:
+                parsed = json.loads(data) if data is not None else None
+            except (ValueError, UnicodeError):
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    return None
+
+
+def _bundle_version(entry):
+    for program in _programs(entry):
+        if os.path.basename(program).startswith(COLLAB_PROGRAM):
+            package = _nearby(program, "package.json", 3)
+            version = (package or {}).get("version")
+            return version if isinstance(version, str) and _VERSION.fullmatch(version) else None
+    return None
+
+
+def _installed_commit(entry):
+    candidates = [arg for arg in entry.get("args") or [] if os.path.isabs(arg)]
+    if isinstance(entry.get("command"), str) and os.path.basename(entry["command"]).startswith(LOBBY_NAME):
+        candidates.append(entry["command"])
+    for program in candidates[:16]:
+        receipt = _nearby(program, "INSTALL-RECEIPT.json", 5)
+        if receipt is not None:
+            match = _COMMIT.search(json.dumps(receipt.get("source")))
+            return match.group(0) if match else "unknown"
+    return None
+
+
+def _desk_home(entry):
+    value = (entry.get("env") or {}).get("AGENTTOOL_LOBBY_HOME")
+    if not isinstance(value, str) or not os.path.isabs(value):
+        return None
+    try:
+        return stat.S_ISDIR(os.stat(value).st_mode)  # stat only; nothing inside is opened
+    except OSError:
+        return False
+
+
+def agenttool_report(*, home=None, env=None):
+    """Doctor's agenttool section: registrations and journal identity, offline.
+
+    Names (sanitized), environment key names, booleans, versions and a lobby
+    install commit only: never a command, argument, path or environment value.
+    No MCP server, host CLI or lobby command is started, and nothing inside a
+    lobby desk home is opened.
+    """
+    home, env = _home_env(home, env)
+    rows = {}
+    journals = {}
+    resolved_paths = {}
+    versions = set()
+    for harness in ("claude", "astra", "astra-ultra", "codex", "hermes", "hermes-astra-ultra"):
+        found = registrations(harness, home=home, env=env)
+        row = {"config": found["config"], "config_status": found["config_status"]}
+        if found.get("profile"):
+            row["profile"] = _safe_name(found["profile"])
+        collab_entries = [entry for entry in found["entries"] if entry["kind"] == "collab"]
+        listed = []
+        for entry in collab_entries:
+            version = None if entry["unparsed"] else _bundle_version(entry)
+            if version:
+                versions.add(version)
+            listed.append({"name": _safe_name(entry["name"]), "parsed": not entry["unparsed"],
+                           "env_keys": _env_keys(entry["env"]),
+                           "db_configured": isinstance((entry["env"] or {}).get("AGENTOOL_COLLAB_DB"), str),
+                           "bundle_version": version})
+        resolved = resolve_journal(harness, home=home, env=env)
+        if resolved["real"] is None:
+            journal = {"kind": "unresolved", "failure": resolved["failure"], "application_id_ok": None,
+                       "user_version": None, "newer_tables": None}
+        else:
+            if resolved["real"] not in journals:
+                journals[resolved["real"]] = read_journal(resolved["path"])
+            outcome = journals[resolved["real"]]
+            kind = _JOURNAL_KINDS.get(outcome["failure"], "unreadable")
+            journal = {"kind": kind, "failure": outcome["failure"],
+                       "application_id_ok": True if kind == "sqlite_collab" else False if kind == "sqlite_other" else None,
+                       "user_version": outcome["user_version"], "newer_tables": outcome["newer_tables"]}
+            resolved_paths[harness] = resolved["real"]
+        row["collab"] = {"registered": bool(collab_entries), "registrations": listed, "journal": journal}
+        if HARNESS_HOSTS[harness] in {"claude", "codex"}:
+            lobby = [entry for entry in found["entries"] if entry["kind"] == "lobby"]
+            row["lobby"] = {"registered": bool(lobby), "registrations": [
+                {"name": _safe_name(entry["name"]), "env_keys": _env_keys(entry["env"]),
+                 "desk_home_present": _desk_home(entry), "installed_commit": _installed_commit(entry)}
+                for entry in lobby]}
+        rows[harness] = row
+    return {"scope": {"offline": True, "read_only": True, "mcp_servers_started": False},
+            "harnesses": rows,
+            "journals_equal": len(set(resolved_paths.values())) == 1 if len(resolved_paths) > 1 else None,
+            "versions_differ": len(versions) > 1,
+            "limitations": LIMITATIONS + ["A read-only journal open can create empty -wal/-shm files beside a WAL journal.",
+                                          "Lobby desk homes are checked with stat only; lobby.sqlite is never opened."]}
+
+
+def format_agenttool(report):
+    """Doctor text lines for ``agenttool_report``; names and booleans only."""
+    lines = ["agenttool coordination registrations (offline; no MCP server started):"]
+    for harness, row in report.get("harnesses", {}).items():
+        collab_row = row["collab"]
+        journal = collab_row["journal"]
+        if collab_row["registered"]:
+            versions = sorted({item["bundle_version"] for item in collab_row["registrations"] if item["bundle_version"]})
+            text = (f"collab registered ({len(collab_row['registrations'])}), journal {journal['kind']}"
+                    + (f" ({journal['failure']})" if journal["failure"] else "")
+                    + (f", user_version {journal['user_version']}" if journal["user_version"] is not None else "")
+                    + (", newer tables present" if journal["newer_tables"] else "")
+                    + (f", bundle {', '.join(versions)}" if versions else ", bundle version unknown"))
+        else:
+            text = "collab not registered" if row["config_status"] in {"read", "absent"} else f"configuration {row['config_status']}"
+        if "lobby" in row:
+            lobby = row["lobby"]["registrations"]
+            if lobby:
+                desk = {True: "desk home present", False: "desk home absent", None: "desk home not configured"}[lobby[0]["desk_home_present"]]
+                commit = lobby[0]["installed_commit"]
+                text += f"; lobby registered, {desk}, " + (f"commit {commit[:12]}" if commit and commit != "unknown" else
+                                                          "commit unknown" if commit else "no install receipt")
+            else:
+                text += "; lobby not registered"
+        lines.append(f"  {harness} ({row['config']}): {text}")
+    equal = report.get("journals_equal")
+    lines.append("  Collab journals equal across harnesses: " + ("yes" if equal else "no" if equal is False else "not comparable")
+                 + "; bundle versions differ: " + ("yes" if report.get("versions_differ") else "no"))
+    lines.extend("  " + limitation for limitation in report.get("limitations", []))
+    return lines
+
+
 def format_attribution(view):
     """Human text from an attribution view: no paths, credentials or actor text."""
     from .cli import safe_terminal

@@ -393,6 +393,95 @@ class JournalResolutionTests(CollabTestCase):
         self.assertIn("different collab journals", collab.format_attribution(view))
 
 
+class DoctorAgenttoolTests(CollabTestCase):
+    def diagnose(self):
+        from agent_workbench import doctor
+        def fake_run(argv, **_kwargs):
+            return doctor.subprocess.CompletedProcess(argv, 0, "client 1.2.3", "")
+        with patch.object(doctor.shutil, "which", return_value=None), patch.object(doctor.subprocess, "run", side_effect=fake_run):
+            report = doctor.diagnose(home=self.home, project=self.project, env=self.env)
+        return report, doctor.format_report(report)
+
+    def test_doctor_reports_names_booleans_and_versions_but_no_values_paths_or_args(self):
+        connection = build_journal(self.journal)
+        connection.close()
+        desk = self.root / "SENTINEL_DESK_HOME"
+        desk.mkdir()
+        (desk / "lobby.sqlite").write_text("never opened")
+        lobby_root = self.root / "SENTINEL_LOBBY_ROOT"
+        program = lobby_root / "packages" / "lobby" / "bin" / "agenttool-lobby-mcp.ts"
+        program.parent.mkdir(parents=True)
+        commit = "ac1830bc" + "0" * 32
+        (lobby_root / "INSTALL-RECEIPT.json").write_text(json.dumps({"source": f"SENTINEL_SOURCE@{commit}", "tests": 323}))
+        self.register_claude(extra={"args": ["SENTINEL_ARG", str(self.bundle)], "command": "SENTINEL_COMMAND"})
+        data = json.loads((self.home / ".claude.json").read_text())
+        data["mcpServers"]["agenttool-collab"]["env"]["GIT_CEILING_DIRECTORIES"] = "SENTINEL_ENV_VALUE"
+        data["mcpServers"]["agenttool-lobby"] = {"command": "bun", "args": ["--no-env-file", "--config=/dev/null", str(program)],
+                                                 "env": {"AGENTTOOL_LOBBY_HOME": str(desk)}}
+        data["mcpServers"]["bad name! SENTINEL_NAME"] = {"command": "bun", "args": [str(self.bundle)], "env": {}}
+        data["mcpServers"]["unrelated"] = {"command": "SENTINEL_UNRELATED", "env": {"SENTINEL_UNRELATED_KEY": "x"}}
+        (self.home / ".claude.json").write_text(json.dumps(data))
+        self.register_codex()
+        self.register_hermes()
+        opened = []
+        real_open, real_connect = os.open, sqlite3.connect
+        def recording_open(path, *args, **kwargs):
+            opened.append(str(path))
+            return real_open(path, *args, **kwargs)
+        def recording_connect(path, *args, **kwargs):
+            opened.append(str(path))
+            return real_connect(path, *args, **kwargs)
+        with patch("os.open", side_effect=recording_open), patch("sqlite3.connect", side_effect=recording_connect):
+            report, text = self.diagnose()
+        section = report["agenttool"]
+        claude = section["harnesses"]["claude"]
+        self.assertEqual(claude["config"], "~/.claude.json")
+        self.assertEqual([item["name"] for item in claude["collab"]["registrations"]], ["agenttool-collab", "[name withheld]"])
+        self.assertEqual(claude["collab"]["registrations"][0]["env_keys"], ["AGENTOOL_COLLAB_DB", "GIT_CEILING_DIRECTORIES", "GIT_OPTIONAL_LOCKS"])
+        self.assertEqual((claude["collab"]["registrations"][0]["db_configured"], claude["collab"]["registrations"][1]["db_configured"]),
+                         (True, False))
+        self.assertEqual(claude["collab"]["registrations"][0]["bundle_version"], "0.5.0")
+        self.assertEqual(claude["collab"]["journal"], {"kind": "unresolved", "failure": "journal_ambiguous", "application_id_ok": None,
+                                                       "user_version": None, "newer_tables": None})
+        self.assertEqual(claude["lobby"], {"registered": True, "registrations": [
+            {"name": "agenttool-lobby", "env_keys": ["AGENTTOOL_LOBBY_HOME"], "desk_home_present": True, "installed_commit": commit}]})
+        for harness in ("codex", "hermes", "hermes-astra-ultra"):
+            self.assertEqual(section["harnesses"][harness]["collab"]["journal"],
+                             {"kind": "sqlite_collab", "failure": None, "application_id_ok": True, "user_version": 3, "newer_tables": False})
+        self.assertEqual(section["harnesses"]["hermes"]["profile"], "astra-ultra")
+        self.assertNotIn("lobby", section["harnesses"]["hermes"])
+        self.assertEqual(section["journals_equal"], True)
+        self.assertEqual(section["versions_differ"], False)
+        self.assertIn("lobby registered, desk home present, commit ac1830bc0000", text)
+        self.assertIn("codex (~/.codex/config.toml): collab registered (1), journal sqlite_collab, user_version 3, bundle 0.5.0", text)
+        rendered = json.dumps(report) + text
+        for private in ("SENTINEL", "/dev/null", "--no-env-file", str(program), str(self.root)):
+            self.assertNotIn(private, rendered)
+        self.assert_private(rendered)
+        self.assertFalse([path for path in opened if "SENTINEL_DESK_HOME" in path])
+
+    def test_journal_kinds_versions_differ_and_unequal_journals(self):
+        self.journal.parent.mkdir(parents=True)
+        self.journal.write_text("placeholder\n" * 60)
+        other = self.root / "share" / "wrong-id.sqlite"
+        build_journal(other, application_id=7).close()
+        self.register_claude()
+        newer = self.root / "pkg2" / "dist" / "agenttool-collab-mcp.js"
+        newer.parent.mkdir(parents=True)
+        (self.root / "pkg2" / "package.json").write_text(json.dumps({"version": "0.5.1-dev.0"}))
+        self.bundle = newer
+        self.register_codex(db=other)
+        report, text = self.diagnose()
+        section = report["agenttool"]
+        self.assertEqual(section["harnesses"]["claude"]["collab"]["journal"]["kind"], "not_sqlite")
+        self.assertEqual(section["harnesses"]["codex"]["collab"]["journal"]["kind"], "sqlite_other")
+        self.assertIs(section["harnesses"]["codex"]["collab"]["journal"]["application_id_ok"], False)
+        self.assertEqual(section["harnesses"]["hermes"]["collab"]["registered"], False)
+        self.assertEqual((section["journals_equal"], section["versions_differ"]), (False, True))
+        self.assertIn("Collab journals equal across harnesses: no; bundle versions differ: yes", text)
+        self.assertIn("hermes (~/.hermes/config.yaml): collab not registered", text)
+
+
 class CollabCommandTests(CollabTestCase):
     def test_collab_command_is_read_only_and_prints_no_paths_or_actor_text(self):
         connection = build_journal(self.journal)

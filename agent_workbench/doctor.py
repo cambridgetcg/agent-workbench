@@ -402,6 +402,7 @@ def diagnose(*, project: Path | None = None, home: Path | None = None,
     project = Path(project) if project is not None else None
     environment["HOME"] = str(home)
     now = time.time()
+    from .collab import agenttool_report
     codex, token = _codex(home, project, environment, now)
     return {
         "version": 1,
@@ -413,6 +414,7 @@ def diagnose(*, project: Path | None = None, home: Path | None = None,
         "claude": _claude(home, project, environment),
         "astra": _astra(home, environment, token, now, probe),
         "hermes": _hermes(home, environment),
+        "agenttool": agenttool_report(home=home, env=environment),
     }
 
 
@@ -474,4 +476,7 @@ def format_report(report) -> str:
         lines.append(f"    Observed listener: {observed['listener']['status']}; health: {observed['health']['status']}" +
                      (f" (HTTP {observed['health']['http_status']})" if "http_status" in observed["health"] else ""))
         lines.append("    Ultracode activation and actual backend reasoning effort: not observed.")
+    if report.get("agenttool"):
+        from .collab import format_agenttool
+        lines.extend(format_agenttool(report["agenttool"]))
     return "\n".join(lines)
