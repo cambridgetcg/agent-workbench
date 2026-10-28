@@ -367,6 +367,9 @@ def main(argv=None) -> int:
         elif args.command == "note":
             if not args.text.strip() or len(args.text) > 10_000 or "\0" in args.text:
                 raise ValueError("Note must contain 1–10,000 characters.")
+            from .agenttool import SESSION_FILE_REFUSAL, names_collab_session_file
+            if names_collab_session_file(args.text):
+                raise ValueError("Note " + SESSION_FILE_REFUSAL)
             def append(state):
                 state["notes"].append({"kind": args.kind, "text": args.text, "at": now()})
                 add_event(state, "note_added", note_kind=args.kind)

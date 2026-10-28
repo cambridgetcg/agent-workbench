@@ -13,6 +13,7 @@ import re
 import stat
 import unicodedata
 
+from .agenttool import SESSION_FILE_PATTERNS
 from .store import TASK_FIELDS, add_event, now, validate_manifest
 
 
@@ -37,7 +38,7 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b[a-z0-9_-]*(?:api[_-]?key|token|password|secret(?:[_-](?:access[_-])?key)?)"
                r"[\"']?\s*[:=]\s*[\"']?[^\s\"',;}{]{4,}"),
     re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s@]+:[^/\s@]+@"),
-)
+) + SESSION_FILE_PATTERNS
 
 
 def _object(value, required, optional=()):

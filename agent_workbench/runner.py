@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 
+from .agenttool import SESSION_FILE_REFUSAL, launch_refusal, names_collab_session_file, withhold_session_files
 from .processes import host_session_variables, native_environment
 from .store import add_event, now, write_private_json
 
@@ -69,7 +70,7 @@ def redact_summary(value: object, limit: int | None = SUMMARY_LIMIT) -> str:
         cursor = tag.end()
     if not depth:
         visible.append(text[cursor:])
-    text = "".join(visible)
+    text = withhold_session_files("".join(visible))
     text = re.sub(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+", "[credential redacted]", text)
     text = re.sub(r"\b(?:sk|pk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}", "[credential redacted]", text)
     text = re.sub(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[credential redacted]", text)
@@ -717,14 +718,18 @@ def _execute_owned(store, run_id, task_id, deadline, interrupted, ownership):
     started = time.monotonic()
     journal = PublicJournal(store, run_id, task_id, attempt_id)
     workspace = None
+    # Rules added after a run was saved still apply before anything starts.
+    refusal = launch_refusal(task, captured["prompt"])
     try:
         with _private_file(directory / "stdin.txt") as stream:
-            stream.write(captured["prompt"].encode())
+            stream.write(b"" if refusal else captured["prompt"].encode())
         with (directory / "stdin.txt").open("rb") as stdin, _private_file(directory / "stdout.log") as stdout, _private_file(directory / "stderr.log") as stderr:
             try:
                 # Inside the recorded attempt: a vanished claim finishes this
                 # attempt as workspace_busy_after_attempt, never a stale "running".
                 ownership.attach_attempt(attempt_id)
+                if refusal:
+                    raise ValueError(refusal)
                 project = store.read(run_id)["project"]
                 environment = native_environment()
                 removed = host_session_variables(os.environ)
@@ -950,6 +955,8 @@ def request_control(store, run_id, action, text=None):
         raise ValueError("steer requires nonempty text")
     if text is not None and len(text) > 16000:
         raise ValueError("Guidance is limited to 16000 characters")
+    if names_collab_session_file(text):
+        raise ValueError("Guidance " + SESSION_FILE_REFUSAL)
     def request(state):
         if action == "steer":
             state["control"].setdefault("guidance", []).append({"text": text, "at": now(), "id": uuid.uuid4().hex})

@@ -11,6 +11,25 @@ from agent_workbench.store import Store
 
 
 class CliTests(unittest.TestCase):
+    def test_note_and_steer_refuse_collab_session_file_paths(self):
+        locator = "/var/empty/aw/collab-sessions/session_1f.json"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "state")
+            state = store.create({"version": 1, "name": "n", "goal": "g",
+                                  "tasks": [{"id": "w", "harness": "codex", "prompt": "p"}]}, root)
+            for command in (["note", state["id"], "--kind", "evidence", "resume " + locator],
+                            ["steer", state["id"], "AGENTOOL_COLLAB_SESSION_FILE=" + locator]):
+                with self.subTest(command=command[0]):
+                    errors = io.StringIO()
+                    with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(main(["--state-dir", str(root / "state")] + command), 1)
+                    self.assertIn("Collab session credential file", errors.getvalue())
+                    self.assertNotIn(locator, errors.getvalue())
+            after = store.read(state["id"])
+            self.assertEqual(after["notes"], [])
+            self.assertEqual(after["control"]["guidance"], [])
+
     def test_create_from_stdin_defaults_to_current_project(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

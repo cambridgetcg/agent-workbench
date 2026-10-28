@@ -13,6 +13,8 @@ import tempfile
 from typing import Callable
 import uuid
 
+from .agenttool import SESSION_FILE_REFUSAL, names_collab_session_file, refused_command
+
 
 RUN_ID = re.compile(r"[a-f0-9]{32}\Z")
 TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
@@ -51,6 +53,9 @@ def validate_manifest(manifest: dict) -> dict:
         raise ValueError("Workflow manifest contains unsupported fields.")
     name = _text(manifest.get("name"), "workflow name", 160)
     goal = _text(manifest.get("goal"), "goal", 20_000)
+    for label, value in (("Workflow name", name), ("Workflow goal", goal)):
+        if names_collab_session_file(value):
+            raise ValueError(f"{label} {SESSION_FILE_REFUSAL}")
     tasks = manifest.get("tasks")
     if not isinstance(tasks, list) or not 1 <= len(tasks) <= 200:
         raise ValueError("Workflow must contain between 1 and 200 tasks.")
@@ -119,10 +124,16 @@ def validate_manifest(manifest: dict) -> dict:
             if not isinstance(argv, list) or not 1 <= len(argv) <= 256:
                 raise ValueError("Command task requires an argv array.")
             out["argv"] = [_text(a, "command argument", 16_000, empty=i > 0) for i, a in enumerate(argv)]
+            if reason := refused_command(out["argv"]):
+                raise ValueError(f"Task {ident} {reason}")
+            if any(names_collab_session_file(argument) for argument in out["argv"]):
+                raise ValueError(f"Task {ident} {SESSION_FILE_REFUSAL}")
         else:
             if "argv" in task:
                 raise ValueError("Agent tasks accept prompts, not argv.")
             out["prompt"] = _text(task.get("prompt"), "task prompt", 100_000)
+            if names_collab_session_file(out["prompt"]):
+                raise ValueError(f"Task {ident} {SESSION_FILE_REFUSAL}")
             if "model" in task:
                 out["model"] = _text(task["model"], "model", 200)
                 if out["model"].startswith("-"):
