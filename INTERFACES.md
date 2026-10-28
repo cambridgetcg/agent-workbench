@@ -287,7 +287,22 @@ local settings, scalar candidates with contributing sources, permission/hook
 counts, model-related environment candidates and plugin manifest versions. It
 checks instruction-file presence without reading bodies/imports. It does not
 resolve complete native policy/trust/merge behavior or read authentication files.
-Plugin source/cache consistency compares version metadata, not byte identity.
+Plugin source/cache consistency compares version metadata, and for
+agent-workbench also content: each Claude registration row (from
+`installed_plugins.json` and a local directory marketplace source) gets
+`content` `match`, `differs` or `unknown`, `content_files` counts for source and
+cache, and a `content_failure` code when unknown. The digest is
+`evaluation.payload_digest` over Workbench's served scope
+(`agent_workbench/**/*.py`, `scripts/`, `skills/`, `plugin.json`,
+`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`,
+`.codex-plugin/plugin.json`), skipping `__pycache__` and `.git`; a symbolic
+link at a cache root or inside the scope is refused, never followed, leaving
+content unknown. Other plugins report `not_compared`. `plugins.codex_entries`
+adds one row per `$CODEX_HOME/plugins/cache/*/agent-workbench/<version>`
+directory (CODEX_HOME defaulting to `~/.codex`) for the stamped version the
+running checkout's `.codex-plugin/plugin.json` names, compared with that
+checkout the same way; when absent, content is unknown. No path, file name or
+content enters these rows, and Codex's plugin registry is not read.
 
 ## Plugin evaluation (`evaluation.py`)
 
@@ -298,7 +313,10 @@ or measured loaded context; external components and dynamic context are omitted.
 `plugin_payload(plugin) -> dict` separately fingerprints local code, guides,
 fixtures and dot-configuration, including executable mode bits. It excludes
 listed VCS/cache/result paths and rejects symlinks; external dependencies and
-runtime configuration remain unverified. Code or guide changes invalidate a
+runtime configuration remain unverified. Its hashing loop is
+`payload_digest(plugin, scope=None) -> (sha256, files, bytes)`: the whole tree,
+or a fixed sequence of `(relative path, suffixes)` entries with the same path,
+mode-bit and length framing; `explain` uses it to compare plugin caches. Code or guide changes invalidate a
 saved evaluation plan even when its estimated authoring-token inventory matches.
 
 `evaluation_plan(plugin, *, executable='claude', runs=3, case=None, max_cases=20,

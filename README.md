@@ -65,7 +65,12 @@ effort support.
 
 `explain` shows selected configuration sources, scalar candidates, instruction
 file presence, hook/permission counts and plugin registration/cache/source
-versions. It does not open instruction bodies or authentication files, execute
+versions. For agent-workbench it also compares content: `content` is `match`,
+`differs` or `unknown` for each Claude plugin cache and for Codex's cache of the
+current stamped version, by digest of the package code, scripts, skills and
+manifests, with file counts only. A cache can serve stale files under an
+unchanged version, so equal versions alone prove nothing. It does not open
+instruction bodies or authentication files, execute
 plugins, resolve every native merge rule, or claim a file was loaded by an agent.
 `explain --harness` also resolves the executable and probes native version/help.
 Help evidence and observed runtime acknowledgments remain separate. Astra

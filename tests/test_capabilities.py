@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import signal
 import sys
@@ -304,6 +305,120 @@ class CapabilityTests(unittest.TestCase):
         self.assertIn("do not prove", report["plugins"]["comparison"])
         self.assertNotIn("private-hook-location", json.dumps(report))
         self.assertNotIn("private-mcp-command", json.dumps(report))
+
+    def workbench_tree(self, root, version="0.5.2", stamped="0.5.2+codex.20261028120000"):
+        files = {"agent_workbench/__init__.py": "__version__ = '0.5.2'\n",
+                 "agent_workbench/private_sentinel_module.py": "PRIVATE_CONTENT_SENTINEL = 1\n",
+                 "scripts/agent-workbench": "#!/usr/bin/env python3\n",
+                 "skills/agent-workbench/SKILL.md": "Never use `git worktree remove` on Workbench trees.\n",
+                 "plugin.json": json.dumps({"name": "agent-workbench", "version": stamped}),
+                 ".claude-plugin/plugin.json": json.dumps({"name": "agent-workbench", "version": version}),
+                 ".claude-plugin/marketplace.json": json.dumps({"plugins": [{"name": "agent-workbench", "source": "./"}]}),
+                 ".codex-plugin/plugin.json": json.dumps({"name": "agent-workbench", "version": stamped})}
+        for relative, text in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        (root / "scripts/agent-workbench").chmod(0o755)
+        return root
+
+    def cached_copy(self, source, cache):
+        shutil.copytree(source, cache, symlinks=True)
+        # Outside the served scope, as a real cache or checkout carries them.
+        for relative in ("agent_workbench/__pycache__/runner.cpython-314.pyc", "tests/test_local.py",
+                         "README.md", ".git", "agent_workbench/notes.txt"):
+            path = cache / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("local only " + relative)
+        return cache
+
+    def claude_workbench_row(self, cache):
+        source = self.workbench_tree(self.home / "plugins/agent-workbench")
+        self.write(".claude/plugins/installed_plugins.json", {"version": 2, "plugins": {"agent-workbench@agent-workbench-local": [
+            {"scope": "user", "installPath": str(cache), "version": "0.5.2"}]}})
+        self.write(".claude/plugins/known_marketplaces.json", {"agent-workbench-local": {"source": {"source": "directory", "path": str(source)}}})
+        return source
+
+    def claude_content(self):
+        report = self.explain()
+        dumped = json.dumps(report)
+        self.assertNotIn("PRIVATE_CONTENT_SENTINEL", dumped)
+        self.assertNotIn("private_sentinel_module", dumped)
+        return report["plugins"]["entries"][0]
+
+    def test_workbench_cache_content_is_compared_not_only_its_version(self):
+        cache = self.home / ".claude/plugins/cache/agent-workbench-local/agent-workbench/0.5.2"
+        source = self.claude_workbench_row(cache)
+        self.cached_copy(source, cache)
+        row = self.claude_content()
+        self.assertEqual((row["source_cache_consistency"], row["content"]), ("match", "match"))
+        self.assertEqual(row["content_files"], {"source": 8, "cache": 8})
+        # One byte of served code differs while every version string still matches.
+        runner = cache / "agent_workbench/private_sentinel_module.py"
+        runner.write_text(runner.read_text().replace("1", "2"))
+        row = self.claude_content()
+        self.assertEqual((row["source_cache_consistency"], row["content"]), ("match", "differs"))
+        runner.write_text("PRIVATE_CONTENT_SENTINEL = 1\n")
+        (cache / "scripts/agent-workbench").chmod(0o644)
+        self.assertEqual(self.claude_content()["content"], "differs")
+        (cache / "scripts/agent-workbench").chmod(0o755)
+        self.assertEqual(self.claude_content()["content"], "match")
+        shutil.rmtree(cache)
+        row = self.claude_content()
+        self.assertEqual((row["content"], row["content_failure"]), ("unknown", "cache_unavailable"))
+
+    def test_symbolic_links_in_a_cache_are_refused_not_followed(self):
+        cache = self.home / ".claude/plugins/cache/agent-workbench-local/agent-workbench/0.5.2"
+        source = self.claude_workbench_row(cache)
+        self.cached_copy(source, cache)
+        # Linking to the identical source file would read as a match if followed.
+        for relative in ("agent_workbench/private_sentinel_module.py", "skills", ".claude-plugin"):
+            with self.subTest(relative=relative):
+                path = cache / relative
+                moved = cache.with_name("moved-" + path.name)
+                path.rename(moved)
+                path.symlink_to(source / relative, target_is_directory=moved.is_dir())
+                row = self.claude_content()
+                self.assertEqual((row["content"], row["content_failure"]), ("unknown", "cache_refused"))
+                path.unlink()
+                moved.rename(path)
+        self.assertEqual(self.claude_content()["content"], "match")
+        linked = cache.with_name("linked")
+        linked.symlink_to(source, target_is_directory=True)
+        self.claude_workbench_row(linked)
+        row = self.claude_content()
+        self.assertEqual((row["content"], row["content_failure"]), ("unknown", "cache_unavailable"))
+
+    def test_other_plugins_are_not_content_compared(self):
+        cache = self.home / ".claude/plugins/cache/local/other/0.1.0"
+        self.write(cache / ".claude-plugin/plugin.json", {"name": "other", "version": "0.1.0"})
+        self.write(".claude/plugins/installed_plugins.json", {"version": 2, "plugins": {"other@local": [{"scope": "user", "installPath": str(cache), "version": "0.1.0"}]}})
+        row = self.explain()["plugins"]["entries"][0]
+        self.assertEqual((row["content"], row["content_failure"]), ("unknown", "not_compared"))
+
+    def test_codex_cache_row_compares_the_stamped_version_directory(self):
+        source = self.workbench_tree(self.home / "checkout")
+        cache = self.home / ".codex/plugins/cache/personal/agent-workbench/0.5.2+codex.20261028120000"
+        stale = self.home / ".codex/plugins/cache/personal/agent-workbench/0.5.1+codex.20261019095516"
+        self.workbench_tree(stale, "0.5.1", "0.5.1+codex.20261019095516")
+        with patch.object(capabilities, "_SOURCE_ROOT", source):
+            row, = self.explain()["plugins"]["codex_entries"]
+            self.assertEqual((row["cache_status"], row["content"], row["content_failure"]), ("absent", "unknown", "cache_unavailable"))
+            self.cached_copy(source, cache)
+            report = self.explain()
+            row, = report["plugins"]["codex_entries"]
+            self.assertEqual((row["source_version"], row["marketplace"], row["content"], row["content_files"]),
+                             ("0.5.2+codex.20261028120000", "personal", "match", {"source": 8, "cache": 8}))
+            self.assertNotIn("PRIVATE_CONTENT_SENTINEL", json.dumps(report))
+            (cache / "skills/agent-workbench/SKILL.md").write_text("Older skill text.\n")
+            self.assertEqual(self.explain()["plugins"]["codex_entries"][0]["content"], "differs")
+            (cache / "skills/agent-workbench/SKILL.md").unlink()
+            (cache / "skills/agent-workbench/SKILL.md").symlink_to(source / "skills/agent-workbench/SKILL.md")
+            row, = self.explain()["plugins"]["codex_entries"]
+            self.assertEqual((row["content"], row["content_failure"]), ("unknown", "cache_refused"))
+        with patch.object(capabilities, "_SOURCE_ROOT", self.home / "not-a-checkout"):
+            row, = self.explain()["plugins"]["codex_entries"]
+            self.assertEqual((row["cache_status"], row["content"]), ("unknown_version", "unknown"))
 
     def test_fifo_and_oversized_settings_do_not_block(self):
         path = self.home / ".claude/settings.json"
