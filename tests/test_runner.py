@@ -641,7 +641,7 @@ class RunnerTests(unittest.TestCase):
 
     def lineage(self, prompt):
         start = prompt.index("Workbench run lineage for this attempt")
-        end = prompt.index("note text into it.", start) + len("note text into it.")
+        end = prompt.index("transcripts or raw output.", start) + len("transcripts or raw output.")
         return prompt[start:end]
 
     def expected_lineage(self, run_id, task_id, harness, number, attempt_id):
@@ -650,12 +650,18 @@ class RunnerTests(unittest.TestCase):
         return (f"Workbench run lineage for this attempt, not written by an agent: run {run_id[:8]} (full ID {run_id}), "
                 f"task {task_id}, attempt {number} (ID {attempt_id}), harness {harness}.\n"
                 f"Suggested Collab actor label: {harness} · workbench {run_id[:8]}/{task_id}#{number}\n"
-                "- Start a Collab session only if this task needs coordination with other sessions; use that label as its actor and end the session before you finish.\n"
-                "- Delegates and sub-agents report through you: they never start a session of their own, and you never pass them yours or its credential.\n"
-                "- Never review or accept your own completion; request review from a distinct session.\n"
+                "- Collab is optional here: start a session only to coordinate with other sessions, with that label as its actor. "
+                "Nothing ends it for you, so end it before you finish, once any handoff you offered is answered: ending withdraws pending offers.\n"
+                "- Sub-agents inside your process share its Collab connection and your session, so they must not start one, and their Collab calls count as yours. "
+                "A separate agent process you launch may start its own, with your session ID as parent_session_id, and end it before exiting; "
+                "never give anyone your session file or credential.\n"
+                "- Edit-task completion stays pending until a distinct session reviews it. Do not review your own work or an earlier attempt's; "
+                "other sessions from this run, or ones you launched, are distinct but not independent, so name the relation in limits. "
+                "Request a reviewer only if a suitable session is live.\n"
                 "- A Workbench \"succeeded\" status is a process receipt, not Collab completion or acceptance.\n"
-                "- Leases expire; renew them during long work.\n"
-                "- Every session and its model provider can read the journal: never copy prompts, secrets or note text into it.")
+                "- Leases expire, so renew them during long work; one left by a stopped earlier attempt holds until it expires, then needs explicit recovery.\n"
+                "- Every session and its model provider can read the journal, so record only brief coordination facts: "
+                "no prompts, secrets, continuity notes, transcripts or raw output.")
 
     def test_collab_context_is_off_by_default_and_otherwise_only_adds_its_block(self):
         def workflow():
@@ -793,6 +799,22 @@ class RunnerTests(unittest.TestCase):
         self.assertIsNone(imported["controller"])
         self.assertEqual(run_workflow(self.store, imported["id"])["status"], "succeeded")
         self.assertNotIn("Workbench run lineage", self.calls()[1]["prompt"])
+
+    def test_collab_context_included_needs_launch_inspection(self):
+        # A worktree task in a project that is not a Git repository fails while
+        # its checkout is prepared: the prepared prompt held the block, but no
+        # launch record exists to state it, so only run_started shows the option.
+        run_id = self.create([self.agent("review", "hermes-astra-ultra", workspace="worktree")])
+        state = run_workflow(self.store, run_id, collab_context=True)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["tasks"][0]["result"]["failure_kind"], "launch_error")
+        attempt = state["tasks"][0]["attempts"][0]
+        self.assertNotIn("launch", attempt)
+        self.assertEqual(self.calls(), [])
+        prepared = (self.store.directory(run_id) / "attempts" / "review" / attempt["id"] / "stdin.txt").read_text()
+        self.assertIn(self.expected_lineage(run_id, "review", "hermes-astra-ultra", 1, attempt["id"]), prepared)
+        self.assertIs(next(event for event in state["events"] if event["kind"] == "run_started")["collab_context"], True)
+        self.assertIsNone(state["controller"])
 
     def test_note_redaction_happens_before_truncation_and_selects_only_explicit_text(self):
         run_id = self.create([self.agent()])

@@ -276,20 +276,36 @@ Each agent prompt this invocation launches then carries a short Workbench-writte
 block after the goal and before any predecessor record: the run ID (first eight
 characters and full), task ID, attempt number and ID, harness, a suggested actor
 label such as `hermes-astra-ultra · workbench 3f9c2a7b/review#2`, and six fixed
-lines of guidance (start a session only to coordinate, and end it; delegates
-report through the agent and never start their own; no self-review; a Workbench
-`succeeded` is a process receipt, not Collab completion or acceptance; renew
-leases on long work; keep prompts, secrets and note text out of the journal). It
-holds no paths, prompt text or credentials. Command tasks get no prompt, so no block.
+lines of guidance, each with its reason: Collab is optional, and nothing ends
+the session for the agent, so it ends its own once any handoff it offered is
+answered; sub-agents inside its process share its session and must not start
+one, while a separate agent process it launches may start its own with the
+agent's session ID as `parent_session_id`; no self-review, and a session from the
+same run, an earlier attempt or a launched delegate is distinct but not
+independent; a Workbench `succeeded` is a process receipt, not Collab completion
+or acceptance; leases expire and need renewing; and only brief coordination
+facts belong in the journal, never prompts, secrets, continuity notes,
+transcripts or raw output. It holds no paths, prompt text or credentials.
+Command tasks get no prompt, so no block.
 
 Like `--timeout`, `--max-launches` and `--jobs`, the option is not saved with
 the run: pass it again when continuing, retrying or resuming. The `run_started`
-event records `collab_context`, and each attempt's launch record states
-`collab_context_included`. Without the option prompts are unchanged; exports and
-handoffs never carry it. The label is a self-declared display name, traceable by
-convention but not proof of which process started a session. The block neither
-starts a session nor grants Collab tools: those come from the harness's own MCP
-configuration (`explain --harness` names the servers).
+event records `collab_context`. Each attempt that reaches launch inspection
+records `collab_context_included` in its launch record; it describes the
+prepared prompt, not delivery, so an attempt that stops before its harness reads
+the prompt still records true. An attempt that fails earlier, such as while
+preparing its worktree, has no launch record; its invocation's `run_started`
+event still shows the option. Without the option prompts are unchanged; exports
+and handoffs never carry it. The label is a self-declared display name,
+traceable by convention but not proof of which process started a session. The
+block neither starts a session nor grants Collab tools: those come from the
+harness's own MCP configuration (`explain --harness` names the servers).
+
+Workbench never ends a Collab session either. One started by an attempt that is
+stopped, times out or fails stays active, and its leases hold until they expire
+and then need explicit recovery. Find it by its label in Collab's workspace
+status and, after checking what it left, end it from the host with
+`agenttool-collab-host end --session-file <its session file> --reason <text> --release-leases`.
 
 ## Control and recover
 

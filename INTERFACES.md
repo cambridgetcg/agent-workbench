@@ -62,10 +62,14 @@ attempt's prompt gets a Workbench-written lineage block after the goal and
 before predecessor blocks: run ID (8-character prefix and full), task ID,
 attempt number and ID, harness, the suggested Collab actor label
 `<harness> · workbench <run8>/<task>#<attempt>` and six fixed guidance lines,
-with no paths, prompt text or credentials. Launch evidence (`launch.json` and the
-attempt's `launch` summary) records `collab_context_included` for every attempt;
-command tasks record false. When false, prompts are byte-for-byte unchanged.
-Workbench writes nothing to Collab and adds no manifest, task or handoff field.
+each with its reason, with no paths, prompt text or credentials. Launch evidence
+(`launch.json` and the attempt's `launch` summary) records
+`collab_context_included` for every attempt that reaches launch inspection;
+command tasks record false. It describes the prepared prompt, not delivery. An
+attempt that fails earlier has no launch record; the `run_started` event still
+shows the option. When false, prompts are byte-for-byte unchanged.
+Workbench writes nothing to Collab, ends no session and adds no manifest, task
+or handoff field.
 The `run_started` event also lists
 `budgets_beyond_run_timeout(state, timeout_seconds)`: pending tasks whose Hermes
 `run_budget_seconds` is not shorter than the invocation's limit, which would end

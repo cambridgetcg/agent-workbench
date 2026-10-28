@@ -314,19 +314,26 @@ def _collab_context(run_id, task, attempt_id):
     Workbench writes nothing to the Collab journal; a suggested actor label lets
     such a session be traced back to this attempt. Identifiers only: no paths,
     prompt text or credentials. The label is a display convention, not proof of
-    which process started a session.
+    which process started a session. Each guidance line carries its reason, so
+    an agent can judge the cases it does not name.
     """
     number = len(task["attempts"])
     label = f"{task['harness']} · workbench {run_id[:8]}/{task['id']}#{number}"
     return (f"Workbench run lineage for this attempt, not written by an agent: run {run_id[:8]} (full ID {run_id}), "
             f"task {task['id']}, attempt {number} (ID {attempt_id}), harness {task['harness']}.\n"
             f"Suggested Collab actor label: {label}\n"
-            "- Start a Collab session only if this task needs coordination with other sessions; use that label as its actor and end the session before you finish.\n"
-            "- Delegates and sub-agents report through you: they never start a session of their own, and you never pass them yours or its credential.\n"
-            "- Never review or accept your own completion; request review from a distinct session.\n"
+            "- Collab is optional here: start a session only to coordinate with other sessions, with that label as its actor. "
+            "Nothing ends it for you, so end it before you finish, once any handoff you offered is answered: ending withdraws pending offers.\n"
+            "- Sub-agents inside your process share its Collab connection and your session, so they must not start one, and their Collab calls count as yours. "
+            "A separate agent process you launch may start its own, with your session ID as parent_session_id, and end it before exiting; "
+            "never give anyone your session file or credential.\n"
+            "- Edit-task completion stays pending until a distinct session reviews it. Do not review your own work or an earlier attempt's; "
+            "other sessions from this run, or ones you launched, are distinct but not independent, so name the relation in limits. "
+            "Request a reviewer only if a suitable session is live.\n"
             "- A Workbench \"succeeded\" status is a process receipt, not Collab completion or acceptance.\n"
-            "- Leases expire; renew them during long work.\n"
-            "- Every session and its model provider can read the journal: never copy prompts, secrets or note text into it.")
+            "- Leases expire, so renew them during long work; one left by a stopped earlier attempt holds until it expires, then needs explicit recovery.\n"
+            "- Every session and its model provider can read the journal, so record only brief coordination facts: "
+            "no prompts, secrets, continuity notes, transcripts or raw output.")
 
 
 def _prompt(state, task, guidance, lineage=""):

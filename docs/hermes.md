@@ -132,11 +132,14 @@ sets its own `HERMES_HOME` is not run, so an absent profile there is reported as
 `run RUN_ID --collab-context` gives each Hermes prompt in that invocation its
 run, task and attempt IDs and a suggested Collab actor label such as
 `hermes-astra-ultra · workbench 3f9c2a7b/review#1`; Workbench itself writes
-nothing to Collab. Hermes `delegate_task` children share the parent's MCP server
-process and so any Collab session the parent bound, which is why the block tells
-delegates to report through the parent instead of starting their own session.
-Whether a task can reach Collab at all depends on the profile's MCP servers,
-not on this option.
+nothing to Collab. Hermes `delegate_task` children run inside the parent's
+process and share its MCP server process, which binds one Collab session: a
+child's session start is refused once the parent holds one, and would otherwise
+bind the shared process under the child's label. Their Collab calls count as the
+parent's. That is why the block tells in-process sub-agents not to start a
+session, while a separate agent process the task launches may start its own,
+with the parent's session ID as `parent_session_id`. Whether a task can reach
+Collab at all depends on the profile's MCP servers, not on this option.
 
 Success requires process exit zero and exactly one valid native terminal result
 with exit code zero, text and a session identifier. Recoverable individual tool

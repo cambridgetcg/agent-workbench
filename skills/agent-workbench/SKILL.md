@@ -68,8 +68,9 @@ For command syntax and a workflow example, read [the guide](../../README.md).
   attempt IDs, harness, a suggested actor label
   `<harness> · workbench <run8>/<task>#<attempt>` and Collab guidance. It is not
   saved, so repeat it when continuing or retrying; launch records show
-  `collab_context_included`. A Workbench `succeeded` is a process receipt, never
-  Collab completion or acceptance.
+  `collab_context_included` (the prepared prompt, not delivery). A Workbench
+  `succeeded` is a process receipt, never Collab completion or acceptance, and
+  Workbench never ends a session an agent started.
 - Opt into `--adapter duplex` only for Claude/Astra-compatible tasks needing live
   controls. A runtime handshake must succeed before the prompt is sent. Use
   `send RUN TASK TEXT --request-id ID` or `interrupt RUN TASK --request-id ID`
