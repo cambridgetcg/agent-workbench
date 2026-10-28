@@ -107,6 +107,19 @@ class NativeEnvironmentTests(unittest.TestCase):
         self.assertEqual(host_session_variables(host), ["CODEX_CI", "CODEX_ESCALATE_SOCKET", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
                                                         "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_TOOL_CALL_ID", "CODEX_VERSION"])
 
+    def test_collab_binding_prefixes_and_hermes_terminal_cwd_are_removed_but_locations_pass(self):
+        from agent_workbench.processes import host_session_variables, native_environment
+        host = {"AGENTOOL_COLLAB_SESSION_FILE": "/private/session.json", "AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY": "1",
+                "AGENTOOL_COLLAB_CLAUDE_PID": "1", "AGENTOOL_COLLAB_SEAT_REF": "seat", "AGENTTOOL_COLLAB_SEAT_REF": "seat",
+                "AGENTTOOL_COLLAB_FUTURE": "x", "TERMINAL_CWD": "/elsewhere",
+                "AGENTOOL_COLLAB_DB": "/journal.sqlite", "AGENTOOL_COLLAB_ANCHOR_LEDGER": "/anchors",
+                "AGENTOOL_COLLABORATOR": "kept", "AGENTTOOL_LOBBY_HOME": "/desk", "PATH": "/bin"}
+        self.assertEqual(native_environment(host), {"AGENTOOL_COLLAB_DB": "/journal.sqlite", "AGENTOOL_COLLAB_ANCHOR_LEDGER": "/anchors",
+                                                    "AGENTOOL_COLLABORATOR": "kept", "AGENTTOOL_LOBBY_HOME": "/desk", "PATH": "/bin"})
+        self.assertEqual(host_session_variables(host), ["AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY", "AGENTOOL_COLLAB_CLAUDE_PID",
+                                                        "AGENTOOL_COLLAB_SEAT_REF", "AGENTOOL_COLLAB_SESSION_FILE",
+                                                        "AGENTTOOL_COLLAB_FUTURE", "AGENTTOOL_COLLAB_SEAT_REF", "TERMINAL_CWD"])
+
 
 if __name__ == "__main__":
     unittest.main()

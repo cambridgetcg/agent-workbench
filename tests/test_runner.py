@@ -343,6 +343,24 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("CLAUDE_CODE_MESSAGING_TOKEN", launch["host_session_environment_removed"])
         self.assertNotIn("synthetic-host-channel-token", json.dumps(state))
 
+    def test_collab_binding_and_terminal_cwd_are_not_inherited_and_are_listed_in_launch_json(self):
+        host = {"AGENTOOL_COLLAB_SESSION_FILE": "/synthetic/private-session.json", "AGENTTOOL_COLLAB_SEAT_REF": "seat",
+                "TERMINAL_CWD": "/synthetic/elsewhere", "AGENTOOL_COLLAB_DB": "/synthetic/journal.sqlite",
+                "AGENTOOL_COLLAB_ANCHOR_LEDGER": "/synthetic/anchors"}
+        dump = ("import json,os; print(json.dumps(sorted(k for k in os.environ "
+                "if k.startswith(('AGENTOOL_', 'AGENTTOOL_', 'TERMINAL_CWD')))))")
+        with patch.dict(os.environ, host):
+            state = run_workflow(self.store, self.create([{"id": "env", "harness": "command", "argv": [sys.executable, "-c", dump]}]))
+        self.assertEqual(state["status"], "succeeded")
+        self.assertEqual(json.loads(state["tasks"][0]["result"]["summary"]), ["AGENTOOL_COLLAB_ANCHOR_LEDGER", "AGENTOOL_COLLAB_DB"])
+        attempt = state["tasks"][0]["attempts"][0]
+        launch = json.loads((self.store.directory(state["id"]) / attempt["launch_profile"]).read_text())
+        removed = launch["host_session_environment_removed"]
+        for name in ("AGENTOOL_COLLAB_SESSION_FILE", "AGENTTOOL_COLLAB_SEAT_REF", "TERMINAL_CWD"):
+            self.assertIn(name, removed)
+        self.assertNotIn("AGENTOOL_COLLAB_DB", removed)
+        self.assertNotIn("private-session", json.dumps(launch))
+
     def test_hermes_file_mutation_footer_is_a_warning_not_clean_success(self):
         state = run_workflow(self.store, self.create([self.agent("edit", "hermes", prompt="MUTATION_FOOTER")]))
         result = state["tasks"][0]["result"]

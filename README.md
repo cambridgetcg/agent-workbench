@@ -144,9 +144,13 @@ launches (tasks, plugin evaluations and mod checks) do not inherit the launching
 host session's identity and messaging variables: `CLAUDECODE`, `CLAUDE_PID`,
 `CLAUDE_EFFORT`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`,
 `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`,
-every `CLAUDE_CODE_MESSAGING_` variable, and Codex's `CODEX_CI`,
+every `CLAUDE_CODE_MESSAGING_` variable, Codex's `CODEX_CI`,
 `CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_TOOL_CALL_ID`,
-`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`. Other environment variables, including API
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, Hermes's
+`TERMINAL_CWD`, and every agenttool collab session-binding variable
+(`AGENTOOL_COLLAB_` and `AGENTTOOL_COLLAB_` names other than the journal and
+anchor-ledger locations `AGENTOOL_COLLAB_DB` and `AGENTOOL_COLLAB_ANCHOR_LEDGER`,
+which pass through). Other environment variables, including API
 keys, are inherited; a task's launch record lists the removed names. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise

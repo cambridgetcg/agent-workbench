@@ -75,9 +75,15 @@ Codex sandbox flag value or None. `processes.native_environment()` omits the
 launching host session's identity and messaging variables
 (`HOST_SESSION_ENV`, which includes Codex's `CODEX_CI`, `CODEX_SESSION_ID`,
 `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_TOOL_CALL_ID`,
-`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, plus every `CLAUDE_CODE_MESSAGING_` name; `CODEX_HOME`,
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, Hermes's `TERMINAL_CWD`,
+plus every `CLAUDE_CODE_MESSAGING_` name and every `AGENTOOL_COLLAB_`/`AGENTTOOL_COLLAB_` name
+except the pass-through locations `AGENTOOL_COLLAB_DB` and `AGENTOOL_COLLAB_ANCHOR_LEDGER`
+(`HOST_SESSION_PREFIXES`, `HOST_SESSION_PASS_THROUGH`); `CODEX_HOME`,
 credentials, `CODEX_SANDBOX*` and Codex's network proxy variables stay) for tasks, plugin
-evaluations and mod checks; a task's launch record lists the removed names.
+evaluations and mod checks; a task's launch record lists the removed names. The collab
+strip matters for Claude and Astra children, whose MCP servers may inherit the
+environment; Hermes gives MCP servers a safe baseline plus their own `env` block, and
+Codex a whitelist.
 Launch inspection passes `update_check=False`, so Hermes's update-checking
 `--version` is not probed during runs.
 Each agent prompt receives at most eight recent notes within an 8,000-character

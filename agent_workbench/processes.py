@@ -22,20 +22,31 @@ import time
 # Claude Code, or Codex when Workbench runs from its plugin (Codex 0.156 sets the
 # first four CODEX_ markers on every command it runs; newer hosts add the tool-call
 # id; the originator override and escalation socket are its entrypoint and channel
-# back to the parent). A native
+# back to the parent). Hermes exports TERMINAL_CWD in its own process and its
+# terminal children; inherited, it re-anchors a child Hermes session's terminal
+# and file tools away from the Workbench checkout. A native
 # launch is a separate session, so these are never inherited. CODEX_SANDBOX* and
 # the network proxy variables stay: a sandbox does bind the processes inside it.
 HOST_SESSION_ENV = ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
                     "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
                     "CLAUDE_PID", "CLAUDE_EFFORT",
                     "CODEX_CI", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_VERSION", "CODEX_TOOL_CALL_ID",
-                    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_ESCALATE_SOCKET")
-HOST_SESSION_PREFIXES = ("CLAUDE_CODE_MESSAGING_",)
+                    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_ESCALATE_SOCKET",
+                    "TERMINAL_CWD")
+# The agenttool collab MCP binds a process to a session through variables such
+# as AGENTOOL_COLLAB_SESSION_FILE (resume and fence the owner) and
+# _ALLOW_CURSOR_RECOVERY; later collab builds add more under the same prefix, in
+# either spelling. A child starts its own session, so the whole prefix is
+# stripped. Journal and anchor-ledger locations name shared files, not a
+# session, and pass through so a child's MCP selects the same journal.
+HOST_SESSION_PREFIXES = ("CLAUDE_CODE_MESSAGING_", "AGENTOOL_COLLAB_", "AGENTTOOL_COLLAB_")
+HOST_SESSION_PASS_THROUGH = frozenset({"AGENTOOL_COLLAB_DB", "AGENTOOL_COLLAB_ANCHOR_LEDGER"})
 
 
 def host_session_variables(env) -> list[str]:
     """Names, never values, of host-session variables present in ``env``."""
-    return sorted(key for key in env if key in HOST_SESSION_ENV or key.startswith(HOST_SESSION_PREFIXES))
+    return sorted(key for key in env if key not in HOST_SESSION_PASS_THROUGH
+                  and (key in HOST_SESSION_ENV or key.startswith(HOST_SESSION_PREFIXES)))
 
 
 def native_environment(env=None) -> dict:
