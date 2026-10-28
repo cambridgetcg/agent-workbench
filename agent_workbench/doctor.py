@@ -19,6 +19,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .agenttool import format_lines, wiring
+
 
 _LIMIT = 2 * 1024 * 1024
 _EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"}
@@ -411,6 +413,7 @@ def diagnose(*, project: Path | None = None, home: Path | None = None,
         "claude": _claude(home, project, environment),
         "astra": _astra(home, environment, token, now, probe),
         "hermes": _hermes(home, environment),
+        "agenttool": wiring(home=home, project=project, env=environment),
     }
 
 
@@ -472,4 +475,5 @@ def format_report(report) -> str:
         lines.append(f"    Observed listener: {observed['listener']['status']}; health: {observed['health']['status']}" +
                      (f" (HTTP {observed['health']['http_status']})" if "http_status" in observed["health"] else ""))
         lines.append("    Ultracode activation and actual backend reasoning effort: not observed.")
+    lines.extend(format_lines(report.get("agenttool") or {}))
     return "\n".join(lines)

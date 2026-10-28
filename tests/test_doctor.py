@@ -87,6 +87,23 @@ class DoctorTests(unittest.TestCase):
         self.assertTrue(all(kwargs["timeout"] == 3 and isinstance(argv, list) and not kwargs.get("shell")
                             for argv, kwargs in self.calls))
 
+    def test_text_report_lists_agenttool_tools_by_harness(self):
+        self.write(".codex/config.toml", '[mcp_servers.agenttool]\nurl = "https://api.agenttool.dev/v1/mcp"\n')
+        self.write(".hermes/config.yaml", "mcp_servers:\n  agenttool_canon:\n    url: https://api.agenttool.dev/v1/mcp/canon\n")
+        before = {str(path.relative_to(self.home)): path.read_bytes() for path in self.home.rglob("*") if path.is_file()}
+        report = self.diagnose()
+        after = {str(path.relative_to(self.home)): path.read_bytes() for path in self.home.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+        section = report["agenttool"]
+        self.assertEqual(section["harnesses"]["codex"]["summary"]["public_agenttool"], "configured")
+        self.assertEqual(section["harnesses"]["hermes"]["summary"]["public_canon"], "configured")
+        text = doctor.format_report(report)
+        self.assertIn("AgentTool tools by harness", text)
+        for harness in ("codex", "claude", "hermes", "hermes-astra-ultra"):
+            self.assertIn(f"  {harness}: ", text)
+        self.assertIn("public agenttool all tools (no allowlist)", text)
+        self.assertTrue(all(argv[1] == "--version" for argv, _ in self.calls))
+
     def test_codex_partial_config_precedence_and_provenance(self):
         self.write(".codex/config.toml", 'model = "gpt-6-astra"\nmodel_reasoning_effort = "xhigh"\napproval_policy = "on-request"\n')
         self.write("project/.codex/config.toml", 'model = "gpt-6-sol"\nmodel_reasoning_effort = "max"\n')

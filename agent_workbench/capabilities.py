@@ -42,7 +42,8 @@ _FLAGS = {"--output-format", "--input-format", "--resume", "--continue", "--work
           "--format", "--query-file", "--reasoning", "--max-turns", "--skills", "--run-budget"}
 
 
-def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
+def _read_bytes(path: Path) -> tuple[bytes | None, str]:
+    """A bounded read of one regular file, never following it into a device or FIFO."""
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
         try:
@@ -52,16 +53,22 @@ def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
                 raw = stream.read(_LIMIT + 1)
         finally:
             os.close(descriptor)
-        if len(raw) > _LIMIT:
-            return None, "too_large"
-        value = tomllib.loads(raw.decode("utf-8")) if toml else json.loads(raw)
-        return (value, "read") if isinstance(value, dict) else (None, "malformed")
+        return (None, "too_large") if len(raw) > _LIMIT else (raw, "read")
     except FileNotFoundError:
         return None, "absent"
-    except (ValueError, TypeError, UnicodeError):
-        return None, "malformed"
     except OSError:
         return None, "unreadable"
+
+
+def _read(path: Path, *, toml: bool = False) -> tuple[dict | None, str]:
+    raw, status = _read_bytes(path)
+    if raw is None:
+        return None, status
+    try:
+        value = tomllib.loads(raw.decode("utf-8")) if toml else json.loads(raw)
+        return (value, "read") if isinstance(value, dict) else (None, "malformed")
+    except (ValueError, TypeError, UnicodeError):
+        return None, "malformed"
 
 
 def _name(value: object) -> str:
