@@ -5,7 +5,10 @@ workflow, control its execution, compare plugin usefulness, and hand useful
 context to another harness. Version 0.5 lets worktree tasks start from a chosen
 revision and records what each attempt left behind, enforces Codex's read-only
 sandbox for read-only tasks, and passes Hermes turn, skill and budget options;
-0.5.1 also keeps a Codex host session's markers out of native launches.
+0.5.1 also keeps a Codex host session's markers out of native launches. 0.6 is a
+careful neighbour to AgentTool: it keeps Collab session bindings and session-file
+paths out of launches and run state, refuses commands that would sign, send or
+take over a session, and reports which AgentTool tools each harness has.
 Native Hermes workflows, the ChatGPT subscription bridge, launch evidence, Claude
 control receipts, parallel execution and the optional Claude pane remain available.
 Python 3.11 or later on macOS or Linux; no runtime dependencies or service account.
@@ -50,6 +53,12 @@ agent-workbench doctor --project /path/to/project --probe --json
 agent-workbench explain --project /path/to/project
 agent-workbench explain --harness claude --project /path/to/project
 ```
+
+`doctor` ends with "AgentTool tools by harness": which public AgentTool MCP
+servers, Collab and the lobby's read-only view each harness has configured, read
+from configuration files only, with copy-ready text for a missing public server.
+Use `--project` for the folder whose Claude servers you want to see. See
+[AgentTool next door](docs/agenttool.md).
 
 The default doctor reads selected metadata and checks installed versions, except
 Hermes: its version command can check for updates, so doctor reports presence only. It
@@ -128,6 +137,10 @@ Agent tasks use a `prompt` and optional explicit `model` / `effort`. Astra
 requires the separately installed `claude-astra` launcher. A command task uses
 an `argv` array, for example `["python3", "-m", "unittest", "discover"]`, and
 executes without a shell. Optional `timeout_seconds` bounds an individual task.
+Command tasks may not run the AgentTool lobby CLI or any lease send, Collab
+courier, `collab-zerone anchor`, hosted mission clients, `agenttool-collab-host end`
+or the personal `/v1/wake`, and no name, goal, prompt or argument may name a Collab
+session credential file; see [AgentTool next door](docs/agenttool.md).
 
 Tasks run serially by default. A successor receives the goal
 and bounded predecessor results. Agent tasks also receive recent recorded notes
@@ -146,8 +159,13 @@ host session's identity and messaging variables: `CLAUDECODE`, `CLAUDE_PID`,
 `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_EXECPATH`,
 every `CLAUDE_CODE_MESSAGING_` variable, and Codex's `CODEX_CI`,
 `CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_VERSION`, `CODEX_TOOL_CALL_ID`,
-`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`. Other environment variables, including API
-keys, are inherited; a task's launch record lists the removed names. Starting a run
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and `CODEX_ESCALATE_SOCKET`, and AgentTool Collab's
+`AGENTOOL_COLLAB_SESSION_FILE`, `AGENTOOL_COLLAB_ALLOW_CURSOR_RECOVERY` and
+`AGENTOOL_COLLAB_CLAUDE_PID` (a child holding them would fence the host's Collab
+session; `AGENTOOL_COLLAB_DB` stays). Other environment variables, including API
+keys, are inherited; a task's launch record lists the removed names. An older
+Hermes without `chat --run-budget` refuses a task that sets `run_budget_seconds`
+at launch, with that reason. Starting a run
 invokes real agents and uses the corresponding subscription or API allowance.
 Explicit manifest model and effort choices override native defaults; otherwise
 the defaults remain in force. Process success alone does not establish that an
@@ -455,6 +473,17 @@ Start a new session after plugin installation. Ask an agent to use Agent
 Workbench for diagnostics, workflow management or a handoff. The plugin is not
 selected for ordinary coding requests merely because it is installed.
 
+## Work next to AgentTool
+
+Agents use AgentTool through their own harness's MCP tools; Workbench makes no
+AgentTool call and holds no AgentTool identity. [AgentTool next door](docs/agenttool.md)
+explains what launches withhold, which commands are refused and why, how to read
+doctor's AgentTool section, and the Collab peer pattern in
+[examples/collab-peer.json](examples/collab-peer.json): a separate native agent
+completes one Collab task into pending review, a command task checks its file
+effect, and the parent reviews from its own session. Lobby commands are for a
+person at a real terminal; Workbench never runs them.
+
 ## Roadmaps
 
 The [Hermes source and customization map](docs/research/hermes-agent-2026-09-25.md)
@@ -469,7 +498,7 @@ work, with exact source revisions and installed-version boundaries.
 | --- | --- | --- |
 | [Workflows](docs/roadmaps/workflows.md) | Mixed harnesses, bounded concurrency, explicit checkout ownership and retained worktrees | Explicit artifact integration and reusable workflow packs |
 | [Run control](docs/roadmaps/run-control.md) | Live event metadata, Claude duplex receipts, pause/stop/recovery and optional status pane | Native run-boundary signals and interactive permission bridging |
-| [Doctor](docs/roadmaps/doctor.md) | Configuration explanations, executable/capability evidence and plugin evaluation | Stronger native effective-configuration evidence |
+| [Doctor](docs/roadmaps/doctor.md) | Configuration explanations, executable/capability evidence, plugin evaluation and AgentTool tools by harness | Stronger native effective-configuration evidence |
 | [Handoffs](docs/roadmaps/handoffs.md) | Versioned artifacts, inspectable history and bounded note continuity | Project comparison and evidence reconciliation |
 
 ## Development

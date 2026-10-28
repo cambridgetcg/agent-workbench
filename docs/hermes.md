@@ -112,6 +112,13 @@ tool names can appear in public workflow events; prompts, tool arguments,
 tool outputs and reasoning remain in private native logs. Stop, deadlines and
 recovery preserve Workbench's existing explicit-retry rules.
 
+Hermes delegates share their parent's MCP connection, so each independent
+AgentTool Collab peer needs its own Workbench task; see
+[AgentTool next door](agenttool.md). `doctor` reads `config.yaml`'s `mcp_servers`
+block with a block-style subset reader to show which AgentTool tools Hermes has.
+An older Hermes that lacks `chat --run-budget` refuses `run_budget_seconds` at
+launch, and Workbench also recognises its older file-mutation footer.
+
 Hermes currently supports the process adapter. Workbench's live `send` and
 acknowledged turn interrupt remain Claude-compatible features. Process-group
 stop is available for Hermes. Hermes plugin evaluation is not implemented.

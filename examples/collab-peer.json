@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Collab peer with an independent check",
+  "goal": "A separate native agent completes one Collab task into pending review; a command checks its file effect; the parent reviews from its own session.",
+  "tasks": [
+    {
+      "id": "peer",
+      "harness": "hermes",
+      "timeout_seconds": 600,
+      "prompt": "Carry out one Collab task in this project with your own Collab tools; do not simulate results. You are a separate native process, not the parent and not a reviewer.\n\n1. Read AGENTS.md. Start your own Collab session at this project's Git root with actor REPLACE_ACTOR_LABEL. Confirm the workspace is REPLACE_WORKSPACE_ID.\n2. Get task REPLACE_TASK_ID and claim it at its latest version with a short lease.\n3. Do the task's work. Write only the files the task names.\n4. Attach your result file as an artifact with its own SHA-256.\n5. Report to the parent session REPLACE_PARENT_SESSION_ID with the artifact, a short result and its limits.\n6. Complete the task into pending review. Do not review your own task.\n7. If you fail, release your lease. End your own session on success or failure.\n\nNever open, print or copy anything in a collab-sessions directory and never set AGENTOOL_COLLAB_SESSION_FILE. Do not use the lobby. No delegation, schedules, config changes or other tasks. Return your session ID, the task version and review state, the artifact ID and whether your session ended; never tokens or hidden reasoning."
+    },
+    {
+      "id": "check",
+      "harness": "command",
+      "depends_on": ["peer"],
+      "workspace": "read-only",
+      "timeout_seconds": 60,
+      "argv": ["python3", "verify.py"]
+    }
+  ]
+}
