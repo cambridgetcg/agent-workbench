@@ -317,6 +317,71 @@ class AttributionTests(CollabTestCase):
         view = collab.attribution(self.store.read(command["id"]), home=self.home, env=self.env)
         self.assertEqual((view["attempts"][0]["failure"], view["journals"]), ("command_task", []))
 
+    def test_a_journal_over_the_row_limit_is_reported_not_partially_read(self):
+        connection = build_journal(self.journal)
+        self.addCleanup(connection.close)
+        self.register_claude()
+        for number in range(1, 4):
+            add_session(connection, number, root="/shared", actor="a" + LABEL + ATTEMPT)
+        state = self.run_with([self.attempt()])
+        with patch.object(collab, "ROW_LIMIT", 2):
+            view = collab.attribution(state, home=self.home, env=self.env)
+        self.assertEqual((view["attempts"][0]["status"], view["attempts"][0]["failure"]), ("unavailable", "journal_too_large"))
+        self.assertEqual(view["journals"][0]["failure"], "journal_too_large")
+        self.assertEqual(collab.attribution(state, home=self.home, env=self.env)["attempts"][0]["session_count"], 3)
+
+
+class JournalReadContractTests(CollabTestCase):
+    """The journal is opened read-only, query-only and without following links."""
+
+    def setUp(self):
+        super().setUp()
+        connection = build_journal(self.journal)
+        add_session(connection, 1, root="/shared")
+        connection.close()
+
+    def count(self, table):
+        connection = sqlite3.connect(self.journal)
+        try:
+            return connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        finally:
+            connection.close()
+
+    def test_the_connection_is_a_read_only_uri_and_query_only(self):
+        opened = []
+        real_connect = sqlite3.connect
+        def recording(database, *args, **kwargs):
+            opened.append((database, kwargs.get("uri")))
+            return real_connect(database, *args, **kwargs)
+        with patch("sqlite3.connect", side_effect=recording):
+            outcome = collab.read_journal(str(self.journal), lambda c: c.execute("PRAGMA query_only").fetchone()[0])
+        self.assertEqual((outcome["failure"], outcome["result"]), (None, 1))
+        self.assertEqual(opened, [(self.journal.as_uri() + "?mode=ro", True)])
+
+    def test_a_reader_cannot_write_even_with_query_only_lifted(self):
+        def write(connection):
+            connection.execute("INSERT INTO workspaces (id, repository_key) VALUES ('ws_written', 'k')")
+        def lifted(connection):
+            connection.execute("PRAGMA query_only=0")
+            write(connection)
+        before = self.count("workspaces")
+        for reader in (write, lifted):
+            with self.subTest(reader=reader.__name__):
+                self.assertEqual(collab.read_journal(str(self.journal), reader)["failure"], "journal_unreadable")
+                self.assertEqual(self.count("workspaces"), before)
+
+    def test_the_header_is_read_without_following_a_final_link(self):
+        flags = []
+        real_open = os.open
+        def recording(path, flag, *args, **kwargs):
+            flags.append((os.fspath(path), flag))
+            return real_open(path, flag, *args, **kwargs)
+        with patch("os.open", side_effect=recording):
+            self.assertIsNone(collab.read_journal(str(self.journal))["failure"])
+        header = [flag for path, flag in flags if path == str(self.journal)]
+        self.assertTrue(header)
+        self.assertTrue(all(flag & os.O_NOFOLLOW and flag & (os.O_WRONLY | os.O_RDWR) == 0 for flag in header))
+
 
 class JournalResolutionTests(CollabTestCase):
     def resolve(self, harness, **env):
@@ -468,6 +533,9 @@ class JournalResolutionTests(CollabTestCase):
         self.assertEqual(set(servers), {"agenttool", "tagged", "flow"})
         self.assertNotIn("SENTINEL", json.dumps(servers))
         self.assertEqual(collab.hermes_mcp_servers("mcp_servers:\n\tagenttool:\n")[0], "unparsed")
+        # Two column-0 blocks: YAML keeps the last, a guess either way.
+        self.assertEqual(collab.hermes_mcp_servers("mcp_servers:\n  agenttool:\n    command: bun\nmodel: x\n"
+                                                   "mcp_servers:\n  other:\n    command: y\n"), ("unparsed", {}))
         self.assertEqual(collab.hermes_mcp_servers("model: x\n"), ("no_mcp_servers", {}))
 
     def test_harnesses_on_different_journals_warn(self):
@@ -614,6 +682,28 @@ class DoctorAgenttoolTests(CollabTestCase):
         self.assertIn("Collab journals equal across host configurations: no; bundle versions differ: yes", text)
         self.assertIn("hermes (~/.hermes/config.yaml): collab not registered", text)
 
+    def test_lobby_receipt_without_a_commit_absent_desk_home_and_withheld_key_names(self):
+        lobby_root = self.root / "lobby"
+        program = lobby_root / "bin" / "agenttool-lobby-mcp.ts"
+        program.parent.mkdir(parents=True)
+        (lobby_root / "INSTALL-RECEIPT.json").write_text(json.dumps({"source": "SENTINEL_SOURCE@main"}))
+        self.register_claude(name="agenttool-lobby", extra={"command": "bun", "args": [str(program)],
+                                                             "env": {"AGENTTOOL_LOBBY_HOME": str(self.root / "SENTINEL_MISSING_DESK"),
+                                                                     "SENTINEL BAD KEY": "x"}})
+        self.register_claude(name="agenttool-collab")
+        data = json.loads((self.home / ".claude.json").read_text())
+        data["mcpServers"]["agenttool-collab"]["env"]["bad-key=SENTINEL_KEY_VALUE"] = "x"
+        (self.home / ".claude.json").write_text(json.dumps(data))
+        report, text = self.diagnose()
+        claude = report["agenttool"]["harnesses"]["claude"]
+        self.assertEqual(claude["lobby"]["registrations"], [
+            {"name": "agenttool-lobby", "env_keys": ["AGENTTOOL_LOBBY_HOME", "[key withheld]"],
+             "desk_home_present": False, "installed_commit": "unknown"}])
+        self.assertEqual(claude["collab"]["registrations"][0]["env_keys"],
+                         ["AGENTOOL_COLLAB_DB", "GIT_OPTIONAL_LOCKS", "[key withheld]"])
+        self.assertIn("; lobby registered, desk home absent, commit unknown", text)
+        self.assertNotIn("SENTINEL", json.dumps(report) + text)
+
 
 class ParentCheckTests(CollabTestCase):
     def setUp(self):
@@ -623,12 +713,12 @@ class ParentCheckTests(CollabTestCase):
         self.key = collab.repository_key(self.project)
         self.parent = session_id(77)
 
-    def create(self, *options):
-        environment = {key: value for key, value in os.environ.items() if key not in HOST_VARIABLES}
+    def create(self, *options, project=None, environment=None):
+        environment = {**{key: value for key, value in os.environ.items() if key not in HOST_VARIABLES}, **(environment or {})}
         output, error = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, {**environment, "HOME": str(self.home)}, clear=True), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
-            code = main(["--state-dir", str(self.store.root), "create", "--project", str(self.project),
+            code = main(["--state-dir", str(self.store.root), "create", "--project", str(project or self.project),
                          "--prompt", "Work.", "--collab-parent", self.parent, *options])
         state = self.store.read(output.getvalue().strip()) if code == 0 else None
         return code, state, error.getvalue()
@@ -700,6 +790,19 @@ class ParentCheckTests(CollabTestCase):
             self.assertEqual(main(["--state-dir", str(self.store.root), "create", str(manifest), "--project", str(self.project),
                                    "--collab-parent", self.parent]), 0)
         self.assertEqual(self.store.read(output.getvalue().strip())["coordination"]["parent_check"], "matched")
+
+    def test_a_project_without_a_git_key_is_accepted_as_unavailable(self):
+        connection = build_journal(self.journal)
+        self.addCleanup(connection.close)
+        add_session(connection, 77, root=str(self.project), repository_key=self.key)
+        self.register_claude()
+        plain = self.root / "plain"
+        plain.mkdir()
+        # The ceiling keeps Git from finding a repository that encloses the temp root.
+        code, state, error = self.create("--harness", "claude", project=plain,
+                                         environment={"GIT_CEILING_DIRECTORIES": str(self.root)})
+        self.assertEqual(code, 0, error)
+        self.assertEqual(state["coordination"]["parent_check"], "unavailable")
 
     def test_runs_without_a_parent_never_read_the_journal(self):
         self.register_claude()
