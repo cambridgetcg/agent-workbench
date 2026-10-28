@@ -5,7 +5,9 @@ workflow, control its execution, compare plugin usefulness, and hand useful
 context to another harness. Version 0.5 lets worktree tasks start from a chosen
 revision and records what each attempt left behind, enforces Codex's read-only
 sandbox for read-only tasks, and passes Hermes turn, skill and budget options;
-0.5.1 also keeps a Codex host session's markers out of native launches.
+0.5.1 also keeps a Codex host session's markers out of native launches, and
+0.5.2 closes the records of worktrees removed outside Workbench and compares
+plugin caches with their source by content, not only by version.
 Native Hermes workflows, the ChatGPT subscription bridge, launch evidence, Claude
 control receipts, parallel execution and the optional Claude pane remain available.
 Python 3.11 or later on macOS or Linux; no runtime dependencies or service account.
