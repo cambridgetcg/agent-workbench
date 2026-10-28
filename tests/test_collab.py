@@ -509,7 +509,8 @@ class ParentCheckTests(CollabTestCase):
         import hashlib
         expected = "local-git:" + hashlib.sha256(os.path.realpath(self.project / ".git").encode()).hexdigest()
         self.assertEqual(self.key, expected)
-        self.assertIsNone(collab.repository_key(self.home))
+        # Not an enclosing repository's key: a temp dir may sit inside one.
+        self.assertIsNone(collab.repository_key(self.root / "missing"))
 
     def test_parent_in_this_repository_is_matched(self):
         connection = build_journal(self.journal)
