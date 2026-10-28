@@ -478,8 +478,8 @@ sessions. The launching host can end one with collab's own host end command
 `doctor` adds an offline `agenttool` section per harness: whether collab and the
 lobby are registered, environment key names (never values), the journal's kind,
 `application_id`, `user_version` and whether collab 0.5.1's newer tables are
-present, each collab bundle's version and whether they differ, whether harnesses
-share one journal, and for the lobby whether its desk home exists (stat only) and
+present, each collab bundle's version and whether they differ, whether distinct
+host configurations name one journal, and for the lobby whether its desk home exists (stat only) and
 the installed source commit. It starts no MCP server or CLI.
 
 Children never inherit the launching host's collab session binding, and each

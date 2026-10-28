@@ -347,6 +347,7 @@ def registrations(harness, *, home=None, env=None):
     if config.get("failure"):
         result["config_status"] = config["failure"]
         return result
+    result["source"] = os.path.realpath(config["path"])  # private: which configuration file this is
     data, status = _read_bounded(config["path"])
     result["config_status"] = status
     if data is None:
@@ -393,7 +394,8 @@ def resolve_journal(harness, *, home=None, env=None):
     """
     home, env = _home_env(home, env)
     found = registrations(harness, home=home, env=env)
-    result = {"harness": harness, "config": found["config"], "failure": None, "path": None, "real": None}
+    result = {"harness": harness, "config": found["config"], "source": found.get("source"), "failure": None,
+              "path": None, "real": None}
     if found["config_status"] not in {"read", "absent"}:
         result["failure"] = {"hermes_profile_invalid": "hermes_profile_invalid",
                              "unparsed": "registration_unparsed"}.get(found["config_status"], "registration_unreadable")
@@ -819,7 +821,8 @@ def agenttool_report(*, home=None, env=None):
             journal = {"kind": kind, "failure": outcome["failure"],
                        "application_id_ok": True if kind == "sqlite_collab" else False if kind == "sqlite_other" else None,
                        "user_version": outcome["user_version"], "newer_tables": outcome["newer_tables"]}
-            resolved_paths[harness] = resolved["real"]
+            # Keyed by configuration file: harnesses sharing one prove nothing about agreement.
+            resolved_paths[resolved["source"]] = resolved["real"]
         unparsed = found.get("unclassified_unparsed", 0)
         # A configuration that could not be read says nothing about absence.
         known = found["config_status"] in {"read", "absent"}
@@ -873,7 +876,7 @@ def format_agenttool(report):
                 text += "; lobby not registered"
         lines.append(f"  {harness} ({row['config']}): {text}")
     equal = report.get("journals_equal")
-    lines.append("  Collab journals equal across harnesses: " + ("yes" if equal else "no" if equal is False else "not comparable")
+    lines.append("  Collab journals equal across host configurations: " + ("yes" if equal else "no" if equal is False else "not comparable")
                  + "; bundle versions differ: " + ("yes" if report.get("versions_differ") else "no"))
     lines.extend("  " + limitation for limitation in report.get("limitations", []))
     return lines

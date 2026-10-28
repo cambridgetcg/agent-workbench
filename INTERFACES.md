@@ -338,7 +338,9 @@ names, env key names, whether `AGENTOOL_COLLAB_DB` is configured, the journal ki
 (`sqlite_collab`, `sqlite_other`, `not_sqlite`, `missing`, `not_regular`,
 `unreadable`, or `unresolved` with its failure), `application_id_ok`,
 `user_version`, `newer_tables`, each bundle's version from the `package.json`
-beside it, `versions_differ` and `journals_equal` (booleans); for Claude and Codex
+beside it, `versions_differ` (boolean) and `journals_equal` (compared across distinct
+host configuration files, after `realpath`, so harnesses sharing one file count once;
+`null` unless at least two resolved a journal); for Claude and Codex
 the lobby registration, whether its `AGENTTOOL_LOBBY_HOME` exists (stat only;
 nothing inside is opened) and the source commit from an `INSTALL-RECEIPT.json`
 beside the registered package. Never a command, argument, path or env value.

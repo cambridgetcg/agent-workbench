@@ -571,6 +571,28 @@ class DoctorAgenttoolTests(CollabTestCase):
         self.assertIs(rows["hermes"]["collab"]["registered"], False)
         self.assertIn("hermes (~/.hermes/config.yaml): collab not registered", text)
 
+    def test_journals_equal_compares_distinct_host_configurations(self):
+        build_journal(self.journal).close()
+        # claude, astra and astra-ultra read one file: one source compared with itself.
+        self.register_claude()
+        report, text = self.diagnose()
+        self.assertIsNone(report["agenttool"]["journals_equal"])
+        self.assertIn("Collab journals equal across host configurations: not comparable", text)
+        # A CLAUDE_CONFIG_DIR whose file links to the same configuration is not another source.
+        (self.home / "linked").mkdir()
+        (self.home / "linked" / ".claude.json").symlink_to(self.home / ".claude.json")
+        self.env["CLAUDE_CONFIG_DIR"] = str(self.home / "linked")
+        self.assertIsNone(self.diagnose()[0]["agenttool"]["journals_equal"])
+        # Both Hermes harnesses reading one profile are one source too.
+        del self.env["CLAUDE_CONFIG_DIR"]
+        (self.home / ".claude.json").unlink()
+        self.register_hermes()
+        self.assertIsNone(self.diagnose()[0]["agenttool"]["journals_equal"])
+        self.register_codex()
+        report, text = self.diagnose()
+        self.assertIs(report["agenttool"]["journals_equal"], True)
+        self.assertIn("Collab journals equal across host configurations: yes", text)
+
     def test_journal_kinds_versions_differ_and_unequal_journals(self):
         self.journal.parent.mkdir(parents=True)
         self.journal.write_text("placeholder\n" * 60)
@@ -589,7 +611,7 @@ class DoctorAgenttoolTests(CollabTestCase):
         self.assertIs(section["harnesses"]["codex"]["collab"]["journal"]["application_id_ok"], False)
         self.assertEqual(section["harnesses"]["hermes"]["collab"]["registered"], False)
         self.assertEqual((section["journals_equal"], section["versions_differ"]), (False, True))
-        self.assertIn("Collab journals equal across harnesses: no; bundle versions differ: yes", text)
+        self.assertIn("Collab journals equal across host configurations: no; bundle versions differ: yes", text)
         self.assertIn("hermes (~/.hermes/config.yaml): collab not registered", text)
 
 

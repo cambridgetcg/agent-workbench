@@ -20,7 +20,8 @@ their own harness registrations, as before.
   and read-only modes. It reports sessions left active and never ends them.
 - `doctor` checks collab and lobby registrations per harness offline: journal
   identity (`application_id`, `user_version`, collab 0.5.1's newer tables),
-  bundle versions and whether they differ, whether harnesses share one journal,
+  bundle versions and whether they differ, whether distinct host configurations
+  name one journal,
   and the lobby desk home (stat only) and installed commit.
 - Native launches strip the launching host's collab session binding by prefix
   (`AGENTOOL_COLLAB_`, `AGENTTOOL_COLLAB_`; the journal and anchor-ledger
