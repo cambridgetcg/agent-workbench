@@ -5,7 +5,9 @@ workflow, control its execution, compare plugin usefulness, and hand useful
 context to another harness. Version 0.5 lets worktree tasks start from a chosen
 revision and records what each attempt left behind, enforces Codex's read-only
 sandbox for read-only tasks, and passes Hermes turn, skill and budget options;
-0.5.1 also keeps a Codex host session's markers out of native launches.
+0.5.1 also keeps a Codex host session's markers out of native launches, and
+0.5.2 closes the records of worktrees removed outside Workbench and compares
+plugin caches with their source by content, not only by version.
 Native Hermes workflows, the ChatGPT subscription bridge, launch evidence, Claude
 control receipts, parallel execution and the optional Claude pane remain available.
 Python 3.11 or later on macOS or Linux; no runtime dependencies or service account.
@@ -65,8 +67,14 @@ effort support.
 
 `explain` shows selected configuration sources, scalar candidates, instruction
 file presence, hook/permission counts and plugin registration/cache/source
-versions. It does not open instruction bodies or authentication files, execute
-plugins, resolve every native merge rule, or claim a file was loaded by an agent.
+versions. For agent-workbench it also compares content: `content` is `match`,
+`differs` or `unknown` for each Claude plugin cache and for Codex's cache of the
+current stamped version, by digest of the package code, scripts, skills and
+manifests, with file counts only. A cache can serve stale files under an
+unchanged version, so equal versions alone prove nothing; and a cache is never
+taken as the source, even when `explain` runs from one (`source_is_cache`). It
+does not open instruction bodies or authentication files, execute plugins,
+resolve every native merge rule, or claim a file was loaded by an agent.
 `explain --harness` also resolves the executable and probes native version/help.
 Help evidence and observed runtime acknowledgments remain separate. Astra
 wrappers are not executed during discovery; their native PATH child is a candidate
@@ -229,6 +237,19 @@ Workbench never removes a worktree on its own; any automatic cleanup built on
 it should accept exactly a clean tree with HEAD on a remote-tracking ref.
 Incomplete checkout preparation also remains recorded for inspection and is
 refused by this cleanup command.
+
+For a tree already deleted outside Workbench, `workspace-remove` closes its
+record without removing anything, once Git no longer registers the tree. It
+refuses with `registered_but_missing` while `git worktree list` or Git's own
+admin entry still names the path (inspect it, and prune it with Git yourself if
+it is really gone; Workbench never prunes), with `registered_elsewhere` while
+the tree's admin entry points at another existing path (`git worktree move`
+keeps the entry), and with `source_repository_unavailable` when the source
+repository cannot answer. The record says
+`removal_basis: absent_outside_workbench` and keeps the attempt's last recorded
+HEAD and dirtiness. When the attempt ended dirty, or that HEAD is not known to
+be on a remote-tracking ref, `possible_unpushed_loss` is true and the command
+says so.
 
 ## Control and recover
 

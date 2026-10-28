@@ -199,6 +199,31 @@ class EvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symbolic links"):
             evaluation.plugin_payload(self.plugin)
 
+    def test_scoped_digest_uses_the_same_framing_for_listed_paths_only(self):
+        scope = (("skills", (".md",)), (".claude-plugin/plugin.json", None), ("absent", None))
+        digest, files, size = evaluation.payload_digest(self.plugin, scope)
+        self.assertEqual(files, 2)
+        self.assertEqual(evaluation.plugin_payload(self.plugin)["sha256"], evaluation.payload_digest(self.plugin)[0])
+        (self.plugin / "skills/example/notes.txt").write_text("outside the suffix")
+        (self.plugin / "README.md").write_text("outside the scope")
+        (self.plugin / "skills/__pycache__").mkdir()
+        (self.plugin / "skills/__pycache__/cached.pyc").write_bytes(b"cache")
+        self.assertEqual(evaluation.payload_digest(self.plugin, scope), (digest, files, size))
+        (self.plugin / "skills/example/SKILL.md").write_text("abcdefgi")
+        self.assertNotEqual(evaluation.payload_digest(self.plugin, scope)[0], digest)
+        (self.plugin / "skills/example/SKILL.md").write_text("abcdefgh")
+        (self.plugin / "skills/example/SKILL.md").chmod(0o755)
+        self.assertNotEqual(evaluation.payload_digest(self.plugin, scope)[0], digest)
+        (self.plugin / "skills/example/SKILL.md").chmod(0o644)
+        self.assertEqual(evaluation.payload_digest(self.plugin, scope)[0], digest)
+        (self.plugin / "skills/example/linked.txt").symlink_to(self.plugin / "README.md")
+        with self.assertRaisesRegex(ValueError, "symbolic links"):
+            evaluation.payload_digest(self.plugin, scope)
+        (self.plugin / "skills/example/linked.txt").unlink()
+        (self.plugin / "absent").symlink_to(self.plugin / "skills", target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symbolic links"):
+            evaluation.payload_digest(self.plugin, scope)
+
     def test_sigterm_to_evaluation_controller_cleans_evaluator_descendants(self):
         ready = self.root / "ready.json"
         child = "import time; time.sleep(30)"

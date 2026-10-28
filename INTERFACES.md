@@ -1,4 +1,4 @@
-# Implementation contract: 0.5.1
+# Implementation contract: 0.5.2
 
 Python package: `agent_workbench/`. Public CLI: `agent-workbench`.
 
@@ -151,7 +151,43 @@ not just exit code zero with a JSON error. Command success is exit code zero.
   contains. It refuses dirty trees, commits
   no remote-tracking ref contains, ignored files,
   incomplete preparation and ownership mismatches. Git helpers use bounded output, owned
-  process groups and `GIT_OPTIONAL_LOCKS=0`.
+  process groups and `GIT_OPTIONAL_LOCKS=0`. The remote-tracking containment check
+  reads local refs only: it runs with `GIT_NO_LAZY_FETCH=1` and an empty
+  `GIT_ALLOW_PROTOCOL` (for Git releases that ignore the first), so a partial
+  clone never fetches a missing commit from its promisor remote; a missing
+  commit makes the check fail, never answer false.
+  When the recorded root no longer exists (lstat finds nothing), the same lock,
+  activity and ownership-path checks run (the root is the expected
+  `runs/<run>/worktrees/<task>-<attempt>` path and `worktrees` is not a symbolic
+  link), and the record is closed instead; nothing is removed or pruned. The
+  source repository must still be its own checkout and answer
+  `git worktree list --porcelain`, or the call raises `WorkspaceRemovalRefused`
+  with `reason` `source_repository_unavailable` (a failure never reads as "not
+  listed"). If Git still lists the root, or an admin entry's
+  `$GIT_COMMON_DIR/worktrees/*/gitdir` names `<root>/.git` (paths compared after
+  realpath), the reason is `registered_but_missing`: inspect it, and prune it
+  with Git if it is really gone. Git names the admin entry after the root's
+  directory, `<task>-<attempt>` (with a numeric suffix when that name was taken),
+  and `git worktree move` or `repair` keeps the name while changing its gitdir:
+  while such an entry's gitdir names an existing path elsewhere the reason is
+  `registered_elsewhere` (the tree may have been moved; `git worktree list`
+  shows where), and while its gitdir names nothing it is again
+  `registered_but_missing`. A closed record has the third `removal_basis`,
+  `absent_outside_workbench`, with `retained: false`, `removed_head: null` (the
+  HEAD at removal was never observed), `last_recorded_head` (the attempt-end
+  `final_head` when `evidence_status` is `recorded`, else null),
+  `final_head_on_remote_ref` (the same remote-tracking containment check, run in
+  the source repository; null when there is no recorded head, its commit object
+  is missing or Git fails), `recorded_dirty` (the attempt-end `dirty`),
+  `possible_unpushed_loss` (true when `recorded_dirty` is true or
+  `final_head_on_remote_ref` is not true) and `observed_absent_at`. For this basis
+  `removed_at` is when the record was closed, not when the tree was removed. The
+  `workspace_removed` event carries the basis, `possible_unpushed_loss`,
+  `final_head_on_remote_ref` and `recorded_dirty` as scalars; `timeline` shows
+  them, and `status` shows the latest attempt's `removal_basis` and
+  `possible_unpushed_loss`, so a closed record never reads as a removal. A
+  directory or symbolic link found at the root is handled, and refused, as
+  before.
 
 Read-only is a declaration, not OS enforcement, except that Codex receives its
 native read-only sandbox. Worktrees are retained by default.
@@ -264,7 +300,30 @@ local settings, scalar candidates with contributing sources, permission/hook
 counts, model-related environment candidates and plugin manifest versions. It
 checks instruction-file presence without reading bodies/imports. It does not
 resolve complete native policy/trust/merge behavior or read authentication files.
-Plugin source/cache consistency compares version metadata, not byte identity.
+Plugin source/cache consistency compares version metadata, and for
+agent-workbench also content: each Claude registration row (from
+`installed_plugins.json` and a local directory marketplace source) gets
+`content` `match`, `differs` or `unknown`, `content_files` counts for source and
+cache, and a `content_failure` code when unknown. The digest is
+`evaluation.payload_digest` over Workbench's served scope
+(`agent_workbench/**/*.py`, `scripts/`, `skills/`, `plugin.json`,
+`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`,
+`.codex-plugin/plugin.json`), skipping `__pycache__` and `.git`; a symbolic
+link at a cache root or inside the scope is refused, never followed, leaving
+content unknown. Other plugins report `not_compared`. `plugins.codex_entries`
+adds one row per `$CODEX_HOME/plugins/cache/*/agent-workbench/<version>`
+directory (CODEX_HOME defaulting to `~/.codex`) for the stamped version its
+source's `.codex-plugin/plugin.json` names, compared the same way; when absent,
+content is unknown. Its `source_basis` says which source: the first
+agent-workbench directory-marketplace source read from Claude's registry
+(`claude_directory_marketplace`), else the tree running `explain`
+(`running_checkout`, or `running_plugin_cache` when that tree is itself a
+cache, since the bundled script runs from either harness's cache). A source
+that resolves into any Claude or Codex `plugins/cache` directory, configured or
+default, is a copy and is never compared: content is unknown with
+`source_is_cache`, because two stale copies, or one copy and itself, would read
+as a match. The content fields carry no path, file name or file content, and
+Codex's plugin registry is not read.
 
 ## Plugin evaluation (`evaluation.py`)
 
@@ -275,8 +334,12 @@ or measured loaded context; external components and dynamic context are omitted.
 `plugin_payload(plugin) -> dict` separately fingerprints local code, guides,
 fixtures and dot-configuration, including executable mode bits. It excludes
 listed VCS/cache/result paths and rejects symlinks; external dependencies and
-runtime configuration remain unverified. Code or guide changes invalidate a
-saved evaluation plan even when its estimated authoring-token inventory matches.
+runtime configuration remain unverified. Its hashing loop is
+`payload_digest(plugin, scope=None) -> (sha256, files, bytes)`: the whole tree,
+or a fixed sequence of `(relative path, suffixes)` entries with the same path,
+mode-bit and length framing; `explain` uses it to compare plugin caches. Code
+or guide changes invalidate a saved evaluation plan even when its estimated
+authoring-token inventory matches.
 
 `evaluation_plan(plugin, *, executable='claude', runs=3, case=None, max_cases=20,
 timeout_seconds=900, max_cost_usd=5, model=None, judge_model=None, allow_tools=(),

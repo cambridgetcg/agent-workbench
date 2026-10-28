@@ -25,6 +25,8 @@ GIT_TIMEOUT_SECONDS = 30
 GIT_OUTPUT_LIMIT = 1_048_576
 _CLAIM_LIMIT = 256
 _CLAIM_BYTES = 1_048_576
+_ADMIN_ENTRY_LIMIT = 4096
+_ADMIN_GITDIR_BYTES = 65_536
 _KEY = re.compile(r"[a-f0-9]{64}\Z")
 _TOKEN = re.compile(r"[a-f0-9]{32}\Z")
 _COMMIT = re.compile(r"[a-f0-9]{40}(?:[a-f0-9]{24})?\Z")
@@ -58,6 +60,14 @@ class GitWorkspaceError(ValueError):
         super().__init__("Git workspace operation failed; inspect the project locally")
         self.reason = reason
         self.exit_code = exit_code
+
+
+class WorkspaceRemovalRefused(ValueError):
+    """A fixed refusal code, named first in the message; never Git output."""
+
+    def __init__(self, reason, message):
+        super().__init__(reason + ": " + message)
+        self.reason = reason
 
 
 def current_lease():
@@ -374,7 +384,7 @@ def compatible(task, active_tasks):
     return all(other == "worktree" or (mode == other == "read-only") for other in others)
 
 
-def _git(project, *args):
+def _git(project, *args, env=None):
     """Run Git with bounded capture and ownership of its hook/helper group.
 
     A timeout or a parent exiting while a hook keeps the pipes open must not
@@ -383,7 +393,7 @@ def _git(project, *args):
     A helper that deliberately creates a new session is outside this process
     group, just as for native task process groups; this is not an OS sandbox.
     GIT_OPTIONAL_LOCKS=0 keeps status from taking a source checkout's index
-    lock that a concurrent writer may need.
+    lock that a concurrent writer may need. ``env`` adds fixed variables.
     """
     from .runner import _terminate_group
     process = None
@@ -396,7 +406,7 @@ def _git(project, *args):
         spawn = owner.spawn if owner is not None else subprocess.Popen
         process = spawn(["git", "-C", str(project), *args], stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+                        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", **(env or {})},
                         start_new_session=True, close_fds=True)
         for stream in (process.stdout, process.stderr):
             os.set_blocking(stream.fileno(), False)
@@ -578,12 +588,13 @@ def _shares_source_git(root, source_root):
     Workbench added: a repository created, cloned or linked in its place after
     removal is its own checkout root too. Removal and observation both ask this.
     """
-    source = Path(source_root).resolve()
-    common = Path(_git(root, "rev-parse", "--git-common-dir"))
-    source_common = Path(_git(source, "rev-parse", "--git-common-dir"))
-    common = common if common.is_absolute() else root / common
-    source_common = source_common if source_common.is_absolute() else source / source_common
-    return common.resolve() == source_common.resolve()
+    return _common_dir(root) == _common_dir(Path(source_root).resolve())
+
+
+def _common_dir(checkout):
+    """The resolved Git common directory of ``checkout`` (Git may answer relatively)."""
+    common = Path(_git(checkout, "rev-parse", "--git-common-dir"))
+    return (common if common.is_absolute() else Path(checkout) / common).resolve()
 
 
 def observe_workspace(workspace):
@@ -655,12 +666,129 @@ def _on_remote_ref(root, commit):
     refs/remotes as of the last fetch and contacts no remote. It is the only
     basis on which any automatic cleanup may remove a tree (clean AND HEAD on a
     remote ref); an unchanged tree at an unpushed base is removed only on request.
+    A missing or non-commit object makes Git fail, never answer False. In a
+    partial clone Git would fetch a missing commit from its promisor remote:
+    GIT_NO_LAZY_FETCH stops that, and for Git releases that ignore it, an empty
+    GIT_ALLOW_PROTOCOL refuses every transport before any connection.
     """
     return bool(_git(root, "for-each-ref", "--count=1", "--format=%(refname)",
-                     "--contains", commit, "refs/remotes/"))
+                     "--contains", commit, "refs/remotes/",
+                     env={"GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": ""}))
+
+
+def _registered_gitdirs(common):
+    """Admin entry names under ``common/worktrees`` and their resolved ``gitdir`` targets.
+
+    Git keeps one admin directory per linked worktree, whose ``gitdir`` names the
+    tree's ``.git`` file, absolutely or (worktree.useRelativePaths) relative to
+    the admin directory. The entry is named after the tree's directory when it
+    is added, and keeps that name when ``git worktree move`` or ``repair``
+    changes its gitdir. A missing ``worktrees`` directory means none; any other
+    read failure raises, so it can never read as "not registered".
+    """
+    targets = {}
+    try:
+        entries = os.scandir(common / "worktrees")
+    except FileNotFoundError:
+        return targets
+    with entries:
+        for count, entry in enumerate(entries):
+            if count >= _ADMIN_ENTRY_LIMIT:
+                raise OSError("Too many worktree admin entries to check")
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            try:
+                descriptor = os.open(Path(entry.path) / "gitdir", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                                     | getattr(os, "O_NONBLOCK", 0))
+            except FileNotFoundError:
+                continue  # Git treats such an entry as prunable; it names no tree.
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise OSError("Worktree admin gitdir is not a regular file")
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    raw = stream.read(_ADMIN_GITDIR_BYTES + 1)
+            finally:
+                os.close(descriptor)
+            if len(raw) > _ADMIN_GITDIR_BYTES:
+                raise OSError("Worktree admin gitdir is too large")
+            target = Path(os.fsdecode(raw.rstrip(b"\r\n")))
+            targets[entry.name] = os.path.realpath(target if target.is_absolute() else Path(entry.path) / target)
+    return targets
+
+
+def _close_absent(store, run_id, task_id, attempt_id, workspace, root):
+    """Close the record of an owned worktree already removed outside Workbench.
+
+    Runs under the caller's controller lock, after remove_clean's ownership-path
+    checks. Nothing is removed or pruned. The record closes only when the source
+    repository is still its own checkout, ``git worktree list`` no longer lists
+    the root, no admin entry's ``gitdir`` points into it and no admin entry
+    still carries the name Git gave this tree (a moved tree keeps it); a Git or
+    read failure refuses rather than reading as unregistered. The tree's state when
+    it was removed was never observed, so ``removed_head`` is None and the
+    attempt-end evidence is carried as ``last_recorded_head`` and ``recorded_dirty``.
+    """
+    source = Path(workspace["source_root"])
+    try:
+        # Outside its own checkout, Git would answer for an enclosing repository.
+        if not source.is_dir() or Path(_git(source, "rev-parse", "--show-toplevel")).resolve() != source.resolve():
+            raise GitWorkspaceError("source_moved")
+        listed = _git(source, "worktree", "list", "--porcelain")
+        admin = _registered_gitdirs(_common_dir(source))
+    except (GitWorkspaceError, OSError):
+        raise WorkspaceRemovalRefused("source_repository_unavailable",
+            "the worktree's source repository is missing or Git could not answer there, so its registration "
+            "cannot be checked; nothing was changed") from None
+    target = os.path.realpath(root)
+    listed_roots = {os.path.realpath(line[len("worktree "):]) for line in listed.splitlines() if line.startswith("worktree ")}
+    # Git named the admin entry after the root's directory, adding a number
+    # when that name was taken; move and repair keep the name.
+    own = re.compile(re.escape(root.name) + r"(?:[1-9][0-9]*)?\Z")
+    renamed = [gitdir for name, gitdir in admin.items() if own.match(name)]
+    if any(os.path.lexists(gitdir) for gitdir in renamed if gitdir != os.path.realpath(root / ".git")):
+        raise WorkspaceRemovalRefused("registered_elsewhere",
+            "Git still registers this attempt's worktree at another path, so it may have been moved; "
+            "`git worktree list` in the source repository shows where. Workbench removed nothing and kept the record")
+    if target in listed_roots or os.path.realpath(root / ".git") in admin.values() or renamed:
+        raise WorkspaceRemovalRefused("registered_but_missing",
+            "Git still registers this worktree although its directory is gone. Inspect it, and prune it with "
+            "Git yourself if it is really gone; Workbench never prunes")
+    final_head = workspace.get("final_head") if workspace.get("evidence_status") == "recorded" else None
+    final_head = final_head if isinstance(final_head, str) and _COMMIT.fullmatch(final_head) else None
+    on_remote = None
+    if final_head is not None:
+        try:
+            on_remote = _on_remote_ref(source, final_head)
+        except GitWorkspaceError:
+            on_remote = None  # A missing commit object, like any Git failure, leaves this unknown.
+    recorded_dirty = workspace.get("dirty") if isinstance(workspace.get("dirty"), bool) else None
+    loss = recorded_dirty is True or on_remote is not True
+    def closed(current):
+        from .store import add_event, now
+        target_task = next(t for t in current["tasks"] if t["id"] == task_id)
+        entry = next(a for a in target_task["attempts"] if a["id"] == attempt_id)
+        if not entry["workspace"].get("retained") or os.path.lexists(root):
+            raise ValueError("Workspace changed while its removal was checked; inspect it and try again")
+        # removed_at keeps its meaning for consumers of removed records; for
+        # this basis it is when the record was closed, not when the tree went.
+        at = now()
+        entry["workspace"].update(retained=False, removal_basis="absent_outside_workbench", removed_head=None,
+                                  removed_at=at, observed_absent_at=at, last_recorded_head=final_head,
+                                  final_head_on_remote_ref=on_remote, recorded_dirty=recorded_dirty,
+                                  possible_unpushed_loss=loss)
+        add_event(current, "workspace_removed", task_id=task_id, attempt_id=attempt_id,
+                  removal_basis="absent_outside_workbench", possible_unpushed_loss=loss,
+                  final_head_on_remote_ref=on_remote, recorded_dirty=recorded_dirty)
+    store.update(run_id, closed)
+    return store.read(run_id)
 
 
 def remove_clean(store, run_id, task_id, attempt_id):
+    """Remove one owned, clean worktree, or close the record of one already gone.
+
+    A root that no longer exists is closed by _close_absent with removal_basis
+    ``absent_outside_workbench``; everything else must pass every check below.
+    """
     # Same controller lock as recovery/retry: never remove a live run's checkout.
     from .runner import _controller_lock, _check_stale_children
     with _controller_lock(store, run_id):
@@ -677,8 +805,20 @@ def remove_clean(store, run_id, task_id, attempt_id):
             raise ValueError("Workspace preparation did not complete; inspect the retained checkout before cleanup")
         root = Path(workspace["root"])
         expected = store.directory(run_id) / "worktrees" / (task_id + "-" + attempt_id)
-        if (root != expected or root.parent.is_symlink() or root.is_symlink()
-                or not root.is_dir() or root.resolve() != expected):
+        if root != expected or root.parent.is_symlink():
+            raise ValueError("Workspace ownership path does not match")
+        try:
+            os.lstat(root)
+            present = True
+        except FileNotFoundError:
+            present = False  # A dangling link is present; only nothing at all is absent.
+        except OSError:
+            raise ValueError("Workspace ownership path does not match") from None
+        if not present:
+            if root.resolve() != expected:
+                raise ValueError("Workspace ownership path does not match")
+            return _close_absent(store, run_id, task_id, attempt_id, workspace, root)
+        if root.is_symlink() or not root.is_dir() or root.resolve() != expected:
             raise ValueError("Workspace ownership path does not match")
         # Another run can use a retained checkout as its project. The owner
         # run's controller lock does not protect against that foreign lease.

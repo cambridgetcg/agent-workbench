@@ -22,7 +22,9 @@ runtime upgrade is required for these interfaces.
   is reported separately because wrapper forwarding, reserved settings and proxy
   lifetime cannot be established from native help alone.
 - Plugin drift checks compare manifest versions. Equal versions do not prove
-  that source and cache contain identical bytes.
+  that source and cache contain identical bytes, so from 0.5.2 agent-workbench's
+  Claude and Codex caches are also compared by a digest of the served code,
+  scripts, skills and manifests (`content`: match, differs or unknown).
 
 Acceptance evidence: fixture homes cover PATH drift, wrapper boundaries, malformed
 configuration, instruction/auth non-reading, old-version AGENTS.md limits, plugin

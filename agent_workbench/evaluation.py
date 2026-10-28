@@ -130,6 +130,77 @@ def plugin_inventory(plugin):
                             "Skills load progressively; inventory size is not per-turn context cost."]}
 
 
+def _payload_entries(root, start, suffixes=None):
+    """Yield ("directory" | "file", path) below ``start`` in digest order.
+
+    The walk never follows links: a symbolic link to a directory or file is
+    refused. Excluded directories and generated files are skipped first;
+    ``suffixes`` then limits which file names count.
+    """
+    def unreadable(_error):
+        raise ValueError("Plugin payload contains an unreadable directory.")
+    for base, directories, files in os.walk(start, followlinks=False, onerror=unreadable):
+        here = Path(base)
+        directories[:] = sorted(name for name in directories if name not in _PAYLOAD_EXCLUDED_DIRS
+                                 and (here / name).relative_to(root).as_posix() != "evals/results")
+        for name in directories:
+            path = here / name
+            if path.is_symlink():
+                raise ValueError("Plugin payload must not contain symbolic links.")
+            yield "directory", path
+        for name in sorted(files):
+            if name in {".git", ".DS_Store"} or name.endswith((".pyc", ".pyo")):
+                continue
+            path = here / name
+            if path.is_symlink():
+                raise ValueError("Plugin payload must not contain symbolic links.")
+            if suffixes is None or name.endswith(suffixes):
+                yield "file", path
+
+
+def _scoped_entries(root, scope):
+    for relative, suffixes in scope:
+        path = root / relative
+        if any((root / parent).is_symlink() for parent in (Path(relative), *Path(relative).parents[:-1])):
+            raise ValueError("Plugin payload must not contain symbolic links.")
+        if path.is_dir():
+            yield "directory", path
+            yield from _payload_entries(root, path, suffixes)
+        elif os.path.lexists(path):
+            yield "file", path  # A non-regular file is refused when read.
+
+
+def payload_digest(plugin, scope=None):
+    """Digest payload files with path, executable-bit and length framing.
+
+    ``scope`` None covers the whole tree, as plugin_payload reports it.
+    Otherwise it is a sequence of ``(relative path, suffixes)`` entries in a
+    fixed order: a file, or a directory walked recursively and limited to file
+    names ending in ``suffixes`` (None for all). Absent entries add nothing.
+    Returns ``(sha256 hex digest, file count, byte count)``; raises ValueError
+    or OSError for a symbolic link, non-regular file or limit, never following
+    a link.
+    """
+    root = Path(plugin).expanduser().resolve(strict=True)
+    digest, count, byte_count = hashlib.sha256(), 0, 0
+    for kind, path in _payload_entries(root, root) if scope is None else _scoped_entries(root, scope):
+        relative = path.relative_to(root).as_posix().encode()
+        if kind == "directory":
+            digest.update(b"directory\0" + len(relative).to_bytes(4, "big") + relative)
+            continue
+        count += 1
+        if count > _PAYLOAD_MAX_FILES:
+            raise ValueError("Plugin payload contains too many files.")
+        data = _read_regular(path, MAX_REPORT_BYTES)
+        byte_count += len(data)
+        if byte_count > _PAYLOAD_MAX_BYTES:
+            raise ValueError("Plugin payload exceeds its size limit.")
+        executable_bits = path.lstat().st_mode & 0o111
+        digest.update(b"file\0" + len(relative).to_bytes(4, "big") + relative
+                      + executable_bits.to_bytes(2, "big") + len(data).to_bytes(8, "big") + data)
+    return digest.hexdigest(), count, byte_count
+
+
 def plugin_payload(plugin):
     """Fingerprint local plugin code, docs, fixtures and configuration separately.
 
@@ -138,38 +209,8 @@ def plugin_payload(plugin):
     references and runtime dependencies are not pinned by this local digest.
     Symlinks in the payload are rejected rather than traversed or silently omitted.
     """
-    root = Path(plugin).expanduser().resolve(strict=True)
-    digest, count, byte_count = hashlib.sha256(), 0, 0
-    def unreadable(_error):
-        raise ValueError("Plugin payload contains an unreadable directory.")
-    for base, directories, files in os.walk(root, followlinks=False, onerror=unreadable):
-        here = Path(base)
-        directories[:] = sorted(name for name in directories if name not in _PAYLOAD_EXCLUDED_DIRS
-                                 and (here / name).relative_to(root).as_posix() != "evals/results")
-        for name in directories:
-            path = here / name
-            if path.is_symlink():
-                raise ValueError("Plugin payload must not contain symbolic links.")
-            relative = path.relative_to(root).as_posix().encode()
-            digest.update(b"directory\0" + len(relative).to_bytes(4, "big") + relative)
-        for name in sorted(files):
-            if name in {".git", ".DS_Store"} or name.endswith((".pyc", ".pyo")):
-                continue
-            path = here / name
-            if path.is_symlink():
-                raise ValueError("Plugin payload must not contain symbolic links.")
-            count += 1
-            if count > _PAYLOAD_MAX_FILES:
-                raise ValueError("Plugin payload contains too many files.")
-            data = _read_regular(path, MAX_REPORT_BYTES)
-            byte_count += len(data)
-            if byte_count > _PAYLOAD_MAX_BYTES:
-                raise ValueError("Plugin payload exceeds its size limit.")
-            relative = path.relative_to(root).as_posix().encode()
-            executable_bits = path.stat().st_mode & 0o111
-            digest.update(b"file\0" + len(relative).to_bytes(4, "big") + relative
-                          + executable_bits.to_bytes(2, "big") + len(data).to_bytes(8, "big") + data)
-    return {"sha256": digest.hexdigest(), "files": count, "bytes": byte_count,
+    sha256, count, byte_count = payload_digest(plugin)
+    return {"sha256": sha256, "files": count, "bytes": byte_count,
             "excluded_directories": sorted(_PAYLOAD_EXCLUDED_DIRS | {"evals/results"}),
             "excluded_files": [".git", ".DS_Store", "*.pyc", "*.pyo"],
             "scope": "local plugin payload; external references, dependencies and configuration remain unverified"}

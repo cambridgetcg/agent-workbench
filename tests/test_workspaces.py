@@ -190,14 +190,15 @@ run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
         from agent_workbench.runner import _terminate_group
         self.addCleanup(lambda: _terminate_group(group, grace_seconds=0.2))
 
-    def owned(self):
-        self.repository(self.project)
+    def owned(self, project=None):
+        project = project or self.project
+        self.repository(project)
         task = {"id": "work", "harness": "command", "argv": [sys.executable, "-c", "pass"], "workspace": "worktree"}
-        state = self.store.create({"version": 1, "name": "Ownership fixture", "goal": "Verify cleanup ownership", "tasks": [task]}, self.project)
+        state = self.store.create({"version": 1, "name": "Ownership fixture", "goal": "Verify cleanup ownership", "tasks": [task]}, project)
         run_id = state["id"]
         attempt_id = "fixture-attempt"
         self.store.update(run_id, lambda current: current["tasks"][0].update(attempts=[{"id": attempt_id, "status": "running"}]))
-        workspace = workspaces.prepare(self.store, run_id, task, attempt_id, self.project)
+        workspace = workspaces.prepare(self.store, run_id, task, attempt_id, project)
         def completed(current):
             current["status"] = "succeeded"
             current["tasks"][0].update(status="succeeded", attempts=[{"id": attempt_id, "status": "succeeded", "workspace": workspace}])
@@ -362,6 +363,253 @@ run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
         state = workspaces.remove_clean(self.store, run_id, "work", attempt_id)
         self.assertFalse(checkout.exists())
         self.assertEqual(state["tasks"][0]["attempts"][0]["workspace"]["removal_basis"], "unchanged_base")
+
+    def evidenced(self, project=None):
+        """An owned worktree with attempt-end evidence recorded, as after a real attempt."""
+        project = project or self.project
+        run_id, attempt_id, checkout = self.owned(project)
+        workspace = self.store.read(run_id)["tasks"][0]["attempts"][0]["workspace"]
+        recorded = workspaces.record_worktree_evidence(self.store, run_id, "work", attempt_id, workspace)
+        self.assertEqual((recorded["evidence_status"], recorded["dirty"]), ("recorded", False))
+        return run_id, attempt_id, checkout, recorded["final_head"]
+
+    def recorded_workspace(self, run_id):
+        return self.store.read(run_id)["tasks"][0]["attempts"][0]["workspace"]
+
+    def refusal(self, run_id, attempt_id):
+        with self.assertRaises(workspaces.WorkspaceRemovalRefused) as caught:
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertTrue(self.recorded_workspace(run_id)["retained"])
+        return caught.exception
+
+    def test_absent_unregistered_tree_closes_its_record_without_removing_anything(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        # Removed and unregistered outside Workbench, as a raw `git worktree remove` does.
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        state = workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        workspace = state["tasks"][0]["attempts"][0]["workspace"]
+        self.assertEqual((workspace["retained"], workspace["removal_basis"], workspace["removed_head"]),
+                         (False, "absent_outside_workbench", None))
+        self.assertEqual(workspace["last_recorded_head"], head)
+        # No remote-tracking ref holds the recorded HEAD, so work may be lost.
+        self.assertEqual((workspace["final_head_on_remote_ref"], workspace["recorded_dirty"],
+                          workspace["possible_unpushed_loss"]), (False, False, True))
+        self.assertTrue(workspace["observed_absent_at"])
+        self.assertEqual(workspace["removed_at"], workspace["observed_absent_at"])
+        event = state["events"][-1]
+        self.assertEqual((event["kind"], event["task_id"], event["attempt_id"], event["removal_basis"],
+                          event["possible_unpushed_loss"], event["final_head_on_remote_ref"], event["recorded_dirty"]),
+                         ("workspace_removed", "work", attempt_id, "absent_outside_workbench", True, False, False))
+        self.assertTrue(all(value is None or type(value) in {str, bool, int} for value in event.values()))
+        self.assertTrue((self.project / "tracked.txt").is_file())
+        with self.assertRaisesRegex(ValueError, "No retained"):
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+
+    def test_absent_tree_reports_possible_unpushed_loss_from_recorded_evidence(self):
+        def on_remote(project, run_id, head):
+            self.git(project, "update-ref", "refs/remotes/origin/main", head)
+        def dirty(project, run_id, head):
+            on_remote(project, run_id, head)
+            self.store.update(run_id, lambda state: state["tasks"][0]["attempts"][0]["workspace"].update(dirty=True))
+        def unavailable(project, run_id, head):
+            on_remote(project, run_id, head)
+            self.store.update(run_id, lambda state: state["tasks"][0]["attempts"][0]["workspace"].update(
+                evidence_status="unavailable", evidence_failure="git_helper_exit"))
+        def missing_object(project, run_id, head):
+            on_remote(project, run_id, head)
+            self.store.update(run_id, lambda state: state["tasks"][0]["attempts"][0]["workspace"].update(
+                final_head="0123456789abcdef" * 2 + "01234567"))
+        cases = {"pushed_and_clean": (on_remote, True, False, False, True),
+                 "recorded_dirty": (dirty, True, True, True, True),
+                 "evidence_unavailable": (unavailable, None, False, True, False),
+                 "commit_object_missing": (missing_object, None, False, True, True)}
+        for index, (name, (arrange, remote, recorded_dirty, loss, has_head)) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                project = self.root / f"project-{index}"
+                run_id, attempt_id, checkout, head = self.evidenced(project)
+                arrange(project, run_id, head)
+                self.git(project, "worktree", "remove", "--force", str(checkout))
+                workspace = workspaces.remove_clean(self.store, run_id, "work", attempt_id)["tasks"][0]["attempts"][0]["workspace"]
+                self.assertEqual((workspace["removal_basis"], workspace["final_head_on_remote_ref"],
+                                  workspace["recorded_dirty"], workspace["possible_unpushed_loss"]),
+                                 ("absent_outside_workbench", remote, recorded_dirty, loss))
+                self.assertEqual(workspace["last_recorded_head"] is not None, has_head)
+
+    def test_absent_tree_check_never_lazy_fetches_in_a_partial_clone(self):
+        # A local "remote" stands in for a network one: a lazy fetch would
+        # start upload-pack there to look for the missing commit.
+        server = self.root / "server"
+        self.repository(server)
+        (server / "tracked.txt").write_text("server\n")
+        self.git(server, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qam", "server")
+        self.git(server, "config", "uploadpack.allowFilter", "true")
+        project = self.root / "partial"
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", server.as_uri(), str(project)],
+                       capture_output=True, check=True)
+        run_id, attempt_id, checkout, head = self.evidenced(project)
+        # The attempt's last commit was garbage-collected after its tree went.
+        self.store.update(run_id, lambda state: state["tasks"][0]["attempts"][0]["workspace"].update(
+            final_head="0123456789abcdef" * 2 + "01234567"))
+        self.git(project, "worktree", "remove", "--force", str(checkout))
+        trace = self.root / "git-trace.txt"
+        with patch.dict(os.environ, {"GIT_TRACE": str(trace)}):
+            workspace = workspaces.remove_clean(self.store, run_id, "work", attempt_id)["tasks"][0]["attempts"][0]["workspace"]
+        self.assertEqual((workspace["removal_basis"], workspace["final_head_on_remote_ref"], workspace["possible_unpushed_loss"]),
+                         ("absent_outside_workbench", None, True))
+        commands = [line.split("built-in: ", 1)[1] for line in trace.read_text().splitlines() if "built-in: " in line]
+        self.assertTrue(any(command.startswith("git for-each-ref") for command in commands))
+        self.assertEqual([command for command in commands if "upload-pack" in command], [])
+
+    def test_workspace_remove_command_says_plainly_when_work_may_be_lost(self):
+        from agent_workbench.cli import main
+        run_id, attempt_id, checkout, head = self.evidenced()
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--state-dir", str(self.store.root), "workspace-remove", run_id, "work", attempt_id]), 0)
+        text = output.getvalue()
+        self.assertIn("already gone, so Workbench removed nothing", text)
+        self.assertIn("Possible unpushed loss: its last recorded HEAD is on no remote-tracking ref", text)
+        other = self.root / "pushed"
+        run_id, attempt_id, checkout, head = self.evidenced(other)
+        self.git(other, "update-ref", "refs/remotes/origin/main", head)
+        self.git(other, "worktree", "remove", "--force", str(checkout))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(main(["--state-dir", str(self.store.root), "workspace-remove", run_id, "work", attempt_id]), 0)
+        self.assertIn("Workbench removed nothing", output.getvalue())
+        self.assertNotIn("Possible unpushed loss", output.getvalue())
+
+    def test_absent_tree_that_git_still_registers_is_refused_and_never_pruned(self):
+        from agent_workbench.cli import main
+        run_id, attempt_id, checkout, head = self.evidenced()
+        shutil.rmtree(checkout)  # Deleted, not unregistered: Git lists it as prunable.
+        refused = self.refusal(run_id, attempt_id)
+        self.assertEqual(refused.reason, "registered_but_missing")
+        self.assertIn("Workbench never prunes", str(refused))
+        self.assertIn("worktree " + str(checkout), self.git(self.project, "worktree", "list", "--porcelain"))
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--state-dir", str(self.store.root), "workspace-remove", run_id, "work", attempt_id]), 1)
+        self.assertIn("registered_but_missing", errors.getvalue())
+
+    def test_absent_tree_named_by_an_admin_gitdir_is_refused(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        shutil.rmtree(checkout)
+        original = workspaces._git
+        def unlisted(project, *args):
+            # As if `worktree list` printed this tree's path in a form that does not compare equal.
+            output = original(project, *args)
+            if args[:2] == ("worktree", "list"):
+                output = "\n\n".join(block for block in output.split("\n\n")
+                                     if not block.startswith("worktree " + str(checkout)))
+            return output
+        admin = next((self.project / ".git/worktrees").iterdir())
+        with patch.object(workspaces, "_git", side_effect=unlisted):
+            self.assertNotIn(str(checkout), workspaces._git(self.project, "worktree", "list", "--porcelain"))
+            self.assertEqual(self.refusal(run_id, attempt_id).reason, "registered_but_missing")
+            # worktree.useRelativePaths stores the path relative to the admin entry.
+            (admin / "gitdir").write_text(os.path.relpath(checkout / ".git", admin) + "\n")
+            self.assertEqual(self.refusal(run_id, attempt_id).reason, "registered_but_missing")
+        self.assertTrue(admin.is_dir())
+
+    def test_absent_closure_refuses_a_root_recreated_while_git_was_asked(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        original = workspaces._registered_gitdirs
+        def recreated(common):
+            checkout.mkdir()  # Something arrives at the root between the checks and the record update.
+            return original(common)
+        with patch.object(workspaces, "_registered_gitdirs", side_effect=recreated):
+            with self.assertRaisesRegex(ValueError, "changed while its removal was checked"):
+                workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        workspace = self.recorded_workspace(run_id)
+        self.assertTrue(workspace["retained"])
+        self.assertNotIn("removal_basis", workspace)
+        self.assertTrue(checkout.is_dir())
+
+    def test_absent_tree_moved_with_git_is_refused_not_closed(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        (checkout / "work-in-progress.txt").write_text("uncommitted work kept in the moved tree\n")
+        moved = self.root / "moved-tree"
+        # Git keeps the admin entry Workbench created, named <task>-<attempt>,
+        # and points its gitdir at the new location.
+        self.git(self.project, "worktree", "move", str(checkout), str(moved))
+        refused = self.refusal(run_id, attempt_id)
+        self.assertEqual(refused.reason, "registered_elsewhere")
+        self.assertIn("may have been moved", str(refused))
+        self.assertNotIn(str(moved), str(refused))
+        self.assertTrue((moved / "work-in-progress.txt").is_file())
+        # Moved, then deleted without pruning: Git still names the entry.
+        shutil.rmtree(moved)
+        self.assertEqual(self.refusal(run_id, attempt_id).reason, "registered_but_missing")
+        # Git suffixes the entry name with a number when the plain name is taken.
+        admin = self.project / ".git/worktrees"
+        (admin / ("work-" + attempt_id)).rename(admin / ("work-" + attempt_id + "1"))
+        self.assertEqual(self.refusal(run_id, attempt_id).reason, "registered_but_missing")
+        self.git(self.project, "worktree", "prune")
+        state = workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertEqual(state["tasks"][0]["attempts"][0]["workspace"]["removal_basis"], "absent_outside_workbench")
+
+    def test_absent_tree_whose_source_cannot_answer_is_refused(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        moved = self.root / "moved-project"
+        self.project.rename(moved)
+        self.assertEqual(self.refusal(run_id, attempt_id).reason, "source_repository_unavailable")
+        moved.rename(self.project)
+        # A Git failure must never read as "not listed".
+        for reason in ("timeout", "missing_executable", "output_limit"):
+            with self.subTest(reason=reason), patch.object(workspaces, "_git", side_effect=workspaces.GitWorkspaceError(reason)):
+                self.assertEqual(self.refusal(run_id, attempt_id).reason, "source_repository_unavailable")
+        # Without its own repository, Git would answer for an enclosing one instead.
+        shutil.rmtree(self.project / ".git")
+        self.git(self.root, "init", "-q")
+        self.assertEqual(self.refusal(run_id, attempt_id).reason, "source_repository_unavailable")
+
+    def test_absent_closure_still_refuses_foreign_paths_at_the_root(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        checkout.mkdir()
+        (checkout / "foreign.txt").write_text("not Workbench's\n")
+        with self.assertRaises(ValueError) as caught:
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertNotIsInstance(caught.exception, workspaces.WorkspaceRemovalRefused)
+        self.assertTrue((checkout / "foreign.txt").is_file())
+        shutil.rmtree(checkout)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        for target in (elsewhere, self.root / "dangling-target"):
+            with self.subTest(target=target.name):
+                checkout.symlink_to(target, target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, "ownership path"):
+                    workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+                checkout.unlink()
+        # A linked worktree directory is refused even when the tree is absent.
+        parent = checkout.parent
+        parent.rename(parent.with_name("moved-worktrees"))
+        parent.symlink_to(elsewhere, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "ownership path"):
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertTrue(self.recorded_workspace(run_id)["retained"])
+
+    def test_absent_closure_refuses_while_execution_may_be_active(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        self.store.update(run_id, lambda state: state["tasks"][0].update(status="running"))
+        with self.assertRaisesRegex(RuntimeError, "recorded active"):
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        survivor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                    stdin=subprocess.DEVNULL, start_new_session=True)
+        self.addCleanup(survivor.wait, 5)  # Cleanups run last-first: stop the group, then reap.
+        self.stop_group_after_test(survivor.pid)
+        def stale(state):
+            state["tasks"][0]["status"] = "interrupted"
+            state["tasks"][0]["attempts"][0].update(unresolved_process_group=True, process_group=survivor.pid)
+        self.store.update(run_id, stale)
+        with self.assertRaisesRegex(RuntimeError, "stale attempt"):
+            workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        self.assertTrue(self.recorded_workspace(run_id)["retained"])
 
     def test_controller_crash_keeps_checkout_owned_until_explicit_recovery(self):
         from agent_workbench.runner import recover_run, run_workflow

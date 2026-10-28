@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-workbench"
-version = "0.5.1"
+version = "0.5.2"
 description = "Local diagnostics, durable workflows and portable handoffs for coding agents"
 requires-python = ">=3.11"
 dependencies = []

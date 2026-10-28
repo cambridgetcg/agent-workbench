@@ -22,7 +22,7 @@ _EVENT_FIELDS = (
     "session_id", "native_task_id", "tool_use_id", "parent_tool_use_id", "item_id", "agent_id",
     "tool", "role", "terminal_reason", "request_id", "action", "code", "decision_type", "subtype",
     "input_tokens", "output_tokens", "total_cost_usd", "num_turns", "duration_ms", "duration_api_ms", "task_type",
-    "jobs",
+    "jobs", "removal_basis", "possible_unpushed_loss", "final_head_on_remote_ref", "recorded_dirty",
 )
 
 
@@ -71,7 +71,8 @@ def status_details(state: dict) -> dict:
             latest["workspace"] = _selected(attempt.get("workspace", {}), (
                 "mode", "path", "base_ref", "base_commit", "retained", "sandboxed", "source_dirty",
                 "evidence_status", "final_head", "branch", "commits_ahead", "commits_behind", "dirty",
-                "uncommitted_entries", "untracked_entries", "files_changed", "insertions", "deletions"))
+                "uncommitted_entries", "untracked_entries", "files_changed", "insertions", "deletions",
+                "removal_basis", "possible_unpushed_loss"))
             latest["control_receipts"] = [_selected(r, ("at", "request_id", "action", "status")) for r in attempt.get("control_receipts", [])[-64:]]
         result = task.get("result") or {}
         if latest is not None and result.get("attempt_id") == latest.get("id"):
