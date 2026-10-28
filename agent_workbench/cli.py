@@ -200,6 +200,9 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--request-id", help="Caller ID for deduplication; repeated IDs are never resent")
     plan = sub.add_parser("plan", help="Inspect the saved task definitions, notes and imported provenance")
     plan.add_argument("run_id")
+    collab = sub.add_parser("collab", help="Attribute agenttool collab sessions to this run's attempts (read-only, computed live)")
+    collab.add_argument("run_id")
+    collab.add_argument("--json", action="store_true")
     timeline = sub.add_parser("timeline", help="Show recent run events and attempt outcomes without raw logs")
     timeline.add_argument("run_id")
     timeline.add_argument("--limit", type=int, default=20, help="Maximum events to show (1–200)")
@@ -341,6 +344,10 @@ def main(argv=None) -> int:
             print(json.dumps(report, indent=2))
         elif args.command == "plan":
             print(json.dumps(plan_view(store.read(args.run_id)), indent=2))
+        elif args.command == "collab":
+            from .collab import attribution, format_attribution
+            view = redacted_view(attribution(store.read(args.run_id)))
+            print(json.dumps(view, indent=2) if args.json else format_attribution(view))
         elif args.command == "timeline":
             from .views import timeline_view
             print_timeline(timeline_view(store.read(args.run_id), limit=args.limit), args.json)
