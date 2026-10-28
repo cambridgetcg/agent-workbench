@@ -420,6 +420,48 @@ class CapabilityTests(unittest.TestCase):
             row, = self.explain()["plugins"]["codex_entries"]
             self.assertEqual((row["cache_status"], row["content"]), ("unknown_version", "unknown"))
 
+    def test_codex_cache_whose_plugin_directory_is_a_link_is_refused(self):
+        source = self.workbench_tree(self.home / "checkout")
+        market = self.home / ".codex/plugins/cache/personal"
+        market.mkdir(parents=True)
+        # Followed, this link would hash the very files it points at.
+        self.cached_copy(source, self.home / "elsewhere/0.5.2+codex.20261028120000")
+        (market / "agent-workbench").symlink_to(self.home / "elsewhere", target_is_directory=True)
+        with patch.object(capabilities, "_SOURCE_ROOT", source):
+            row, = self.explain()["plugins"]["codex_entries"]
+        self.assertEqual((row["cache_status"], row["content"], row["content_failure"]), ("present", "unknown", "cache_refused"))
+
+    def test_source_with_nothing_in_scope_is_never_a_match(self):
+        source = self.home / "checkout"
+        cache = self.home / ".codex/plugins/cache/personal/agent-workbench/0.5.2+codex.20261028120000"
+        source.mkdir()
+        cache.mkdir(parents=True)
+        original = capabilities._read
+        def vanished(path, **options):
+            # The manifest was read, then removed before the digest: both trees hold nothing in scope.
+            if path == source / ".codex-plugin/plugin.json":
+                return {"name": "agent-workbench", "version": "0.5.2+codex.20261028120000"}, "read"
+            return original(path, **options)
+        with patch.object(capabilities, "_SOURCE_ROOT", source), patch.object(capabilities, "_read", side_effect=vanished):
+            row, = self.explain()["plugins"]["codex_entries"]
+        self.assertEqual((row["content"], row["content_failure"], row["content_files"]),
+                         ("unknown", "source_empty", {"source": 0, "cache": None}))
+
+    def test_workbench_from_a_remote_marketplace_has_no_source_to_compare(self):
+        cache = self.home / ".claude/plugins/cache/agent-workbench-remote/agent-workbench/0.5.2"
+        self.cached_copy(self.workbench_tree(self.home / "stale"), cache)
+        self.write(".claude/plugins/installed_plugins.json", {"version": 2, "plugins": {"agent-workbench@agent-workbench-remote": [
+            {"scope": "user", "installPath": str(cache), "version": "0.5.2"}]}})
+        self.write(".claude/plugins/known_marketplaces.json",
+                   {"agent-workbench-remote": {"source": {"source": "github", "repo": "example/agent-workbench"}}})
+        checkout = self.workbench_tree(self.home / "checkout")
+        with patch.object(capabilities, "_SOURCE_ROOT", checkout):
+            plugins = self.explain()["plugins"]
+        row = plugins["entries"][0]
+        self.assertEqual((row["source_manifest_status"], row["content"], row["content_failure"]),
+                         ("not_local_directory", "unknown", "source_unavailable"))
+        self.assertEqual(plugins["codex_entries"][0]["source_basis"], "running_checkout")
+
     def test_codex_row_never_takes_a_plugin_cache_as_its_source(self):
         # The bundled script may run from either harness's cache. Both caches
         # hold the same stale files; only the checkout has the new skill text.

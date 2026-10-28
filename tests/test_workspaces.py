@@ -513,6 +513,21 @@ run_workflow(Store(sys.argv[2]),sys.argv[3],timeout_seconds=20)
             self.assertEqual(self.refusal(run_id, attempt_id).reason, "registered_but_missing")
         self.assertTrue(admin.is_dir())
 
+    def test_absent_closure_refuses_a_root_recreated_while_git_was_asked(self):
+        run_id, attempt_id, checkout, head = self.evidenced()
+        self.git(self.project, "worktree", "remove", "--force", str(checkout))
+        original = workspaces._registered_gitdirs
+        def recreated(common):
+            checkout.mkdir()  # Something arrives at the root between the checks and the record update.
+            return original(common)
+        with patch.object(workspaces, "_registered_gitdirs", side_effect=recreated):
+            with self.assertRaisesRegex(ValueError, "changed while its removal was checked"):
+                workspaces.remove_clean(self.store, run_id, "work", attempt_id)
+        workspace = self.recorded_workspace(run_id)
+        self.assertTrue(workspace["retained"])
+        self.assertNotIn("removal_basis", workspace)
+        self.assertTrue(checkout.is_dir())
+
     def test_absent_tree_moved_with_git_is_refused_not_closed(self):
         run_id, attempt_id, checkout, head = self.evidenced()
         (checkout / "work-in-progress.txt").write_text("uncommitted work kept in the moved tree\n")
