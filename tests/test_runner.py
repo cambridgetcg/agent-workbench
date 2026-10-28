@@ -1020,6 +1020,30 @@ class RedactionTests(unittest.TestCase):
                 self.assertIn("[redacted]", redacted)
         self.assertIn("session_00000000-0000-4000-8000-000000000000", redact_summary(printed))
 
+    def test_collab_session_token_is_redacted_and_refused_in_markdown_and_escaped_forms(self):
+        from agent_workbench.handoff import contains_credential_text
+        from agent_workbench.runner import redact_summary
+        token = "Qx7-Z_k2" + "b" * 35
+        forms = {
+            "markdown backticks": f"`session_token`: `{token}`",
+            "markdown table": f"| session_token | {token} |",
+            "escaped JSON in a string": json.dumps(json.dumps({"session_token": token})),
+            "spaced words": f"Session token: `{token}`",
+            "quoted key and value": f"\"session_token\" = '{token}'",
+        }
+        for name, text in forms.items():
+            with self.subTest(form=name):
+                redacted = redact_summary(text)
+                self.assertNotIn(token, redacted)
+                self.assertIn("[redacted]", redacted)
+                self.assertTrue(contains_credential_text(text))
+                self.assertFalse(contains_credential_text(redacted))
+        # Ordinary prose and tables about tokens are left alone.
+        for text in ("| tokens | 1234 |", "The session token is never printed.", "| session token | yes |"):
+            with self.subTest(text=text):
+                self.assertFalse(contains_credential_text(text))
+        self.assertEqual(redact_summary("The session token is never printed."), "The session token is never printed.")
+
 
 if __name__ == "__main__":
     unittest.main()

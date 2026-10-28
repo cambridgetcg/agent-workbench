@@ -37,6 +37,8 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\b[a-z0-9_-]*(?:api[_-]?key|token|password|secret(?:[_-](?:access[_-])?key)?)"
                r"[\"']?\s*[:=]\s*[\"']?[^\s\"',;}{]{4,}"),
     re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s@]+:[^/\s@]+@"),
+    # A collab session token has no prefix: its key, in Markdown or escaped JSON too.
+    re.compile(r"(?i)session[_ -]?token[\s`\\\"']*[:=|][\s`\\\"']*[A-Za-z0-9_-]{20,}"),
 )
 
 

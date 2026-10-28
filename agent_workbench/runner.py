@@ -75,8 +75,11 @@ def redact_summary(value: object, limit: int | None = SUMMARY_LIMIT) -> str:
     text = re.sub(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[credential redacted]", text)
     # A collab session_token is 43 base64url characters with no prefix, so only
     # its key can identify it; a child printing its credential file must not
-    # carry the bearer token into state summaries or successor prompts.
-    text = re.sub(r"(?i)((?:access[_-]?token|refresh[_-]?token|session[_-]?token|api[_-]?key|authorization|password|secret)\s*[\"']?\s*[:=]\s*[\"']?)[^\s\"',;}]+", r"\1[redacted]", text)
+    # carry the bearer token into state summaries or successor prompts. Keys
+    # and values may sit in Markdown backticks or table cells, or escaped JSON;
+    # the value class stays wide so a secret is never cut short.
+    text = re.sub(r"(?i)((?:access[_ -]?token|refresh[_ -]?token|session[_ -]?token|api[_ -]?key|authorization|password|secret)"
+                  r"[\s`\\\"']*[:=|][\s`\\\"']*)[^\s\"',;}]+", r"\1[redacted]", text)
     text = re.sub(r"(?i)(https?://)[^/@\s]+:[^/@\s]+@", r"\1[redacted]@", text)
     text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[email redacted]", text)
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
