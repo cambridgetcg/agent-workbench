@@ -71,8 +71,8 @@ An agent's own summary that names one shows `[Collab session file withheld]` in
 status, timeline, plan, launch output and the next agent's prompt. Handoff export
 refuses such a run and continuity notes withhold such a note. A saved prompt that
 names one fails at launch rather than being silently rewritten. Withholding in
-summaries is broader than refusal and keeps a path with spaces from leaking in
-part. Private logs stay private, as before. Workbench never reads, lists or
+summaries is broader than refusal and withholds a path with spaces whole; a path
+that contains a quote character, such as `Yu's Drive`, may keep its start. Private logs stay private, as before. Workbench never reads, lists or
 checks the session folder.
 
 ## See what each harness has

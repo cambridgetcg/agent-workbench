@@ -132,7 +132,8 @@ def validate_manifest(manifest: dict) -> dict:
             if "argv" in task:
                 raise ValueError("Agent tasks accept prompts, not argv.")
             out["prompt"] = _text(task.get("prompt"), "task prompt", 100_000)
-            if names_collab_session_file(out["prompt"]):
+            # The launch prompt carries the goal too, so check them together here, not only at launch.
+            if names_collab_session_file(out["prompt"]) or names_collab_session_file(goal + "\n" + out["prompt"]):
                 raise ValueError(f"Task {ident} {SESSION_FILE_REFUSAL}")
             if "model" in task:
                 out["model"] = _text(task["model"], "model", 200)

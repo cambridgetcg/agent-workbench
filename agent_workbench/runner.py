@@ -78,9 +78,9 @@ def redact_summary(value: object, limit: int | None = SUMMARY_LIMIT) -> str:
     text = re.sub(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+", "[credential redacted]", text)
     text = re.sub(r"\b(?:sk|pk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}", "[credential redacted]", text)
     text = re.sub(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[credential redacted]", text)
-    text = re.sub(r"(?i)((?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|password|secret)\s*[\"']?\s*[:=]\s*[\"']?)[^\s\"',;}]+", r"\1[redacted]", text)
+    text = re.sub(r"(?i)((?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|password|secret)\s*(?:[\"']\s*)?[:=]\s*[\"']?)[^\s\"',;}]+", r"\1[redacted]", text)
     text = re.sub(r"(?i)(https?://)[^/@\s]+:[^/@\s]+@", r"\1[redacted]@", text)
-    text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[email redacted]", text)
+    text = re.sub(r"(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[email redacted]", text)
     text = withhold_session_files(_TERMINAL_CODES.sub("", text))
     return text if limit is None or len(text) <= limit else text[:max(0, limit - 15)] + "\n[truncated]"
 

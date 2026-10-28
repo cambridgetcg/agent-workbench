@@ -174,6 +174,8 @@ SESSION_FILE_REFUSAL = ("names a Collab session credential file. Workbench keeps
 WITHHELD = "[Collab session file withheld]"
 _TOKEN_END = " \t\r\n\"'`<>"
 _PATH_ROOT = re.compile(r"~?[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\]")
+# Where a path can begin inside a word: at its start or after = ( [ { , : with file://, ~, $NAME or a drive.
+_ROOT_IN_WORD = re.compile(r"(?:^|(?<=[=(\[{,:]))(?:file://)?(?:(?:~|\$\w+|\$\{\w+\})?[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\])")
 
 
 def _is_path_value(value: str) -> bool:
@@ -191,7 +193,8 @@ def names_collab_session_file(text) -> bool:
         return False
     if SESSION_FILE_NAME.search(text) or _names_path(SESSION_FILE_ASSIGNMENT, text):
         return True
-    return bool(_COLLAB_CONTEXT.search(text)) and _names_path(SESSION_FILE_OPTION, text)
+    # Workbench's own marker says "Collab"; it must not turn an ordinary session_file into a refusal.
+    return bool(_COLLAB_CONTEXT.search(text.replace(WITHHELD, ""))) and _names_path(SESSION_FILE_OPTION, text)
 
 
 def argv_names_collab_session_file(argv) -> bool:
@@ -218,23 +221,40 @@ def _token_start(text, index, floor):
     return index
 
 
+def _root_in(text, start, end):
+    """The offset where a path begins in text[start:end], or None."""
+    found = _ROOT_IN_WORD.search(text[start:end])
+    return start + found.start() if found else None
+
+
 def _withhold_locators(text: str) -> str:
     pieces, last = [], 0
     for match in SESSION_FILE_NAME.finditer(text):
         start = _token_start(text, match.start(), last)
-        if start < match.start() and not _PATH_ROOT.match(text, start):
+        line = max(last, text.rfind("\n", last, start) + 1)
+        close = text[match.end():match.end() + 1]
+        if close and close in "\"'`" and start > line and text[start - 1] != close:
+            # A quoted path with spaces: withhold from its opening quote when a path begins there.
+            opening = text.rfind(close, line, start)
+            if opening >= 0 and _ROOT_IN_WORD.match(text[opening + 1:match.start()]):
+                start = opening + 1
+        root = _root_in(text, start, match.start())
+        if root is not None:
+            start = root
+        elif start < match.start():
             # The tail of a longer path with spaces ("Application Support/...", "My\ Files/..."):
-            # walk back over at most four words on the same line to the word where the path begins.
-            line = max(last, text.rfind("\n", last, start) + 1)
+            # walk back word by word on this line, never past the previous match, to where the path begins.
             probe = start
-            for _ in range(4):
-                if probe <= line or text[probe - 1] not in " \t":
+            while probe > line and text[probe - 1] in " \t":
+                gap = probe
+                while gap > line and text[gap - 1] in " \t":
+                    gap -= 1
+                previous = _token_start(text, gap, line)
+                if previous == gap:
                     break
-                previous = _token_start(text, probe - 1, line)
-                if previous == probe - 1:
-                    break
-                if _PATH_ROOT.match(text, previous):
-                    start = previous
+                root = _root_in(text, previous, gap)
+                if root is not None:
+                    start = root
                     break
                 probe = previous
         pieces += [text[last:start], WITHHELD]
@@ -304,8 +324,12 @@ _YAML_NUMBER = re.compile(
     r"|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)")
 
 
+# Escapes PyYAML accepts in double-quoted scalars; any other backslash makes the file invalid.
+_BAD_ESCAPE = re.compile(r'\\(?![0abt\tnvfre "/\\N_LP]|x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|\n)')
+
+
 class _Unparsed(ValueError):
-    """Valid YAML outside the subset: only the server it is in is unknown."""
+    """YAML the subset cannot read (valid or not): only the server it is in is unknown."""
 
 
 class _Invalid(_Unparsed):
@@ -353,11 +377,9 @@ def _flow_list(text: str) -> list:
     if quote:
         raise _Invalid()
     if current.strip():
-        items.append(current.strip())
-    elif items:
-        items.append("")
+        items.append(current.strip())  # a trailing comma, as in [a,], is valid
     if any(not item for item in items):
-        raise _Unparsed()
+        raise _Invalid()  # [a,,b] or [,a]
     return [_scalar(item) for item in items]
 
 
@@ -369,10 +391,12 @@ def _scalar(text: str):
     if text[0] == '"':
         if not re.fullmatch(r'"(?:[^"\\]|\\.)*"', text):
             raise _Invalid()
+        if _BAD_ESCAPE.search(text):
+            raise _Invalid()  # an escape YAML does not have, such as \\w or \\q
         try:
             return json.loads(text)
         except ValueError:
-            raise _Unparsed() from None
+            raise _Unparsed() from None  # a YAML-only escape such as \\x41 or \\N
     if text[0] == "'":
         if not re.fullmatch(r"'(?:[^']|'')*'", text):
             raise _Invalid()
@@ -396,7 +420,7 @@ def _is_item(content: str) -> bool:
     return content == "-" or content.startswith("- ")
 
 
-def _yaml_list(items, index, indent):
+def _yaml_list(items, index, indent, parent=-1):
     values = []
     while index < len(items) and items[index][0] == indent and _is_item(items[index][1]):
         item = items[index][1][1:].strip()
@@ -406,6 +430,8 @@ def _yaml_list(items, index, indent):
         index += 1
     if index < len(items) and items[index][0] > indent:
         raise _Unparsed()
+    if index < len(items) and parent < items[index][0] < indent:
+        raise _Invalid()  # a dedent to a column no open block uses
     return values, index
 
 
@@ -417,12 +443,21 @@ def _yaml_mapping(items, index, indent, depth=0):
         level, content = items[index]
         if level < indent:
             break
-        if level > indent or content.startswith("-"):
+        if level > indent:
+            if result and (": " in content or content.endswith(":")):
+                raise _Invalid()  # a continuation holding a mapping indicator, or a mis-indented key
+            raise _Unparsed()
+        if content.startswith("-"):
             raise _Unparsed()
         match = re.fullmatch(r"([^:]+):(?: +(.*))?", content)
         if not match:
-            raise _Unparsed()  # e.g. "url:https://..." is one plain scalar to PyYAML, not a key
+            if result or any(level == indent and re.match(r"[^:]+:(?: |$)", rest_content)
+                             for level, rest_content in items[index + 1:]):
+                raise _Invalid()  # "key:value" among sibling keys
+            raise _Unparsed()  # e.g. a lone "url:https://..." is one plain scalar to PyYAML, not a key
         key, rest = match.group(1), (match.group(2) or "").strip()
+        if key[0] in ",]}%@`":
+            raise _Invalid()
         if key != key.strip() or key[0] in "?&*!|>'\"{[" or key in result:
             raise _Unparsed()
         index += 1
@@ -430,11 +465,13 @@ def _yaml_mapping(items, index, indent, depth=0):
             value = _scalar(rest)
         elif index < len(items) and items[index][0] > indent:
             if _is_item(items[index][1]):
-                value, index = _yaml_list(items, index, items[index][0])
+                value, index = _yaml_list(items, index, items[index][0], parent=indent)
             else:
                 value, index = _yaml_mapping(items, index, items[index][0], depth + 1)
+            if index < len(items) and indent < items[index][0]:
+                raise _Invalid()  # a dedent to a column no open block uses
         elif index < len(items) and items[index][0] == indent and _is_item(items[index][1]):
-            value, index = _yaml_list(items, index, indent)
+            value, index = _yaml_list(items, index, indent, parent=indent - 1)
         else:
             value = None
         result[key] = value
@@ -497,8 +534,8 @@ def _hermes_servers(text: str) -> tuple[dict | None, str]:
             return None, "unparsed"
         raw_name, _, rest = content.partition(":")
         name = raw_name.rstrip(" ")
-        if not name or name[0] in "?&*!|>%@`{[":
-            return None, "unparsed"  # an anchored, tagged or complex key: PyYAML's real name is unknown
+        if not name or name[0] in "?&*!|>%@`{[,]}":
+            return None, "unparsed"  # an anchored, tagged or complex key, or a stray indicator
         if name[0] in "'\"":
             try:
                 name = _scalar(name)
@@ -515,7 +552,7 @@ def _hermes_servers(text: str) -> tuple[dict | None, str]:
                 raise _Unparsed()
             entry, consumed = _yaml_mapping(items[index:end], 0, items[index][0]) if index < end else ({}, 0)
             if consumed != end - index:
-                raise _Unparsed()
+                raise _Invalid()  # a dedent to a column no open block uses
             for key in _VALUE_FREE_KEYS & entry.keys():
                 value = entry[key]
                 entry[key] = ({child: None for child in value} if isinstance(value, dict)
@@ -722,9 +759,12 @@ def _hermes_filter(entry):
         tools = {}
 
     def names(value):
+        # Hermes's _normalize_name_filter: a string is one name; a list keeps str() of every item.
         if isinstance(value, str) and not isinstance(value, _PlainNumber):
-            return {value}
-        return set(_names(value)) if isinstance(value, list) else set()
+            return set(_names([value]))
+        if isinstance(value, list):
+            return set(_names(["None" if item is None else str(item) for item in value]))
+        return set()
 
     include, exclude = names(tools.get("include")), names(tools.get("exclude"))
     return (include, set()) if include else (None, exclude)
@@ -921,7 +961,8 @@ def wiring(*, home, project, env) -> dict:
         "Claude managed or remote MCP, plugin-provided servers, project-server approval, --mcp-config and "
         "--strict-mcp-config are not evaluated.",
         "Hermes config.yaml is read with a block-style subset reader of the mcp_servers block plus a few common "
-        "whole-file errors; a YAML error elsewhere makes Hermes load no MCP servers at all, which may go unnoticed here.",
+        "whole-file errors; a YAML error elsewhere, or in a server counted unparsed, makes Hermes load no MCP "
+        "servers at all, which may go unnoticed here.",
         "Hermes's managed scope ($HERMES_MANAGED_DIR or /etc/hermes) can add servers and is not read; when it exists, "
         "Hermes surfaces read unknown. A HERMES_MANAGED_DIR set only in Hermes's own launch environment is not seen.",
         "Servers whose url or command uses ${...} placeholders are counted as unresolved; their surfaces read unknown.",
@@ -995,6 +1036,8 @@ def format_lines(section: dict) -> list[str]:
         unread = [source["source"] for source in data.get("sources", []) if source["status"] not in ("read", "absent")]
         if unread:
             parts.append("not read: " + ", ".join(unread))
+        if any(source.get("parse") == "partial" for source in data.get("sources", [])):
+            parts.append("file only partly read: if the unread part is invalid YAML, Hermes loads no servers")
         lines.append(f"  {harness}: " + "; ".join(parts))
         for row in data["servers"]:
             for warning in row.get("warnings", []):

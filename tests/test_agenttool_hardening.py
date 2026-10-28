@@ -236,7 +236,11 @@ class ReportHardeningTests(unittest.TestCase):
         self.write("config.toml", '[mcp_servers.agenttool]\nurl = "https://api.agenttool.dev/v1/mcp"\n', base=elsewhere / "codex")
         self.write(".claude.json", json.dumps({"mcpServers": {"x": {"type": "http", "url": "https://api.agenttool.dev/v1/mcp"}}}),
                    base=elsewhere / "claude")
+        (self.home / ".codex/config.toml").unlink()
+        (self.home / ".claude.json").unlink()
+        self.assertEqual(self.report()["harnesses"]["codex"]["summary"]["public_agenttool"], "not_configured")
         moved = self.report(CODEX_HOME=str(elsewhere / "codex"), CLAUDE_CONFIG_DIR=str(elsewhere / "claude"))
+        self.assertEqual(moved["harnesses"]["codex"]["sources"][0]["status"], "read")
         self.assertEqual(moved["harnesses"]["codex"]["summary"]["public_agenttool"], "configured")
         self.assertEqual(moved["harnesses"]["claude"]["summary"]["public_agenttool"], "configured")
         empty = wiring(home=self.root / "empty-home", project=None, env=self.env)
@@ -270,6 +274,87 @@ class ReportHardeningTests(unittest.TestCase):
         self.assertEqual(set(report["commands"].values()), {"present"})
         self.assertEqual(sorted(path.name for path in ran.iterdir()), [])
         self.assertTrue(format_lines(report))
+
+
+class RoundThreeTests(unittest.TestCase):
+    def test_long_paths_with_spaces_are_withheld_whole(self):
+        long_path = "/Users/Jane Doe/Library/Application Support/My Agent Work Space/collab-sessions/s1.json"
+        for text in (f'see "{long_path}" now', f"see `{long_path}` now", f"see {long_path} now",
+                     "see C:\\Users\\Jane Doe\\OneDrive - Contoso Holdings Ltd\\Collab\\collab-sessions\\s1.json now",
+                     "see (/Users/jane/Library/Application Support/agenttool/collab-sessions/s1.json) now",
+                     "see path=/Users/jane/Library/Application Support/agenttool/collab-sessions/s1.json now",
+                     "see file:///Users/jane/Library/Application Support/agenttool/collab-sessions/s1.json now",
+                     "see $HOME/Library/Application Support/agenttool/collab-sessions/s1.json now",
+                     "see /Users/jane/Library/Application  Support/agenttool/collab-sessions/s1.json now"):
+            with self.subTest(text=text):
+                shown = withhold_session_files(text)
+                for private in ("Jane", "jane", "Library", "Application", "Contoso", "HOME"):
+                    self.assertNotIn(private, shown)
+                self.assertTrue(shown.startswith("see ") and shown.endswith(" now"))
+        self.assertEqual(withhold_session_files("see (/x/collab-sessions/s.json)"), f"see ({WITHHELD})")
+        self.assertEqual(withhold_session_files("see path=/x/collab-sessions/s.json"), f"see path={WITHHELD}")
+
+    def test_include_lists_are_built_the_way_hermes_builds_them(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            config = home / ".hermes/config.yaml"
+            config.parent.mkdir(parents=True)
+            env = {"PATH": "", "HERMES_MANAGED_DIR": str(home / "none")}
+            server = "mcp_servers:\n  agenttool:\n    url: https://api.agenttool.dev/v1/mcp\n    tools:\n"
+            for include in ("      include: [null]\n", "      include: [~]\n", "      include: [true]\n", "      include: [5]\n",
+                            "      include:\n        - null\n"):
+                with self.subTest(include=include):
+                    config.write_text(server + include)
+                    section = wiring(home=home, project=None, env=env)["harnesses"]["hermes"]
+                    self.assertEqual((section["servers"][0]["tools"]["fit"], section["summary"]["public_agenttool"]),
+                                     ("different", "partial"))
+            config.write_text(server + "      include: ghp_0123456789abcdefghijklmnopqrstuvwxyz\n")
+            report = wiring(home=home, project=None, env=env)
+            self.assertNotIn("ghp_0123456789", json.dumps(report))
+
+    def test_workbench_marker_is_not_a_mention_of_collab(self):
+        self.assertFalse(names_collab_session_file(f"earlier: --session-file {WITHHELD}\nsession_file: ./state/session.json"))
+        self.assertTrue(names_collab_session_file("Use collab; session_file: ./x.json"))
+
+    def test_goal_and_prompt_are_checked_together_when_saved(self):
+        from agent_workbench.store import validate_manifest
+        with self.assertRaises(ValueError):
+            validate_manifest({"version": 1, "name": "n", "goal": "Finish the collab mode before Friday.", "tasks": [
+                {"id": "w", "harness": "codex", "prompt": "Make the CLI read session_file: ./state/session.json."}]})
+
+    def test_errors_inside_the_block_make_the_whole_block_unparsed(self):
+        good = "  agenttool:\n    url: https://api.agenttool.dev/v1/mcp\n"
+        for sibling in ("  canon:\n    url: x\n    tools:\n      include:\n        - search\n       - fetch\n",
+                        "  github:\n    command: npx\n      args: [x]\n",
+                        "  github:\n    command: npx\n    args: [a,,b]\n",
+                        '  github:\n    command: npx\n    args: ["^\\\\w+$"]\n',
+                        "  github:\n    command: npx\n    args:x\n",
+                        "  github:\n    command: npx\n    @note: hi\n",
+                        "  ]github:\n    command: npx\n",
+                        "  github:\n    env:\n      A: b\n     B: c\n"):
+            with self.subTest(sibling=sibling):
+                self.assertEqual(_hermes_servers("mcp_servers:\n" + good + sibling), (None, "unparsed"))
+        servers, parse = _hermes_servers("mcp_servers:\n" + good + '  ok:\n    command: npx\n    args: [a, "\\x41"]\n')
+        self.assertEqual(parse, "partial")  # a YAML-only escape is valid but outside the subset
+        servers, parse = _hermes_servers("mcp_servers:\n" + good + "  ok:\n    command: npx\n    args: [a,]\n")
+        self.assertEqual((parse, servers["ok"]["args"]), ("read", ["a"]))
+
+    def test_a_partly_read_file_says_hermes_may_load_nothing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            config = home / ".hermes/config.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text("mcp_servers:\n  agenttool:\n    url: https://api.agenttool.dev/v1/mcp\n"
+                              "  multi:\n    command: npx\n    args: [\"-y\",\n      \"pkg\"]\n")
+            report = wiring(home=home, project=None, env={"PATH": "", "HERMES_MANAGED_DIR": str(home / "none")})
+            self.assertIn("Hermes loads no servers", "\n".join(format_lines(report)))
+
+    def test_redaction_stays_fast_on_a_megabyte_of_hostile_output(self):
+        from agent_workbench.runner import redact_summary
+        for text in ("password" + " " * 1_000_000, "%7B%22k%22" * 100_000, "a." * 500_000, "0-" * 500_000):
+            started = time.monotonic()
+            redact_summary(text, limit=2400)
+            self.assertLess(time.monotonic() - started, 3, text[:12])
 
 
 if __name__ == "__main__":
