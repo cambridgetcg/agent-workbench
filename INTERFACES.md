@@ -286,14 +286,18 @@ run. `profile_selection` records which rule applied: `default_home`,
 `hermes_home`, `hermes_home_profile`, `sticky_active_profile`,
 `active_profile_uninterpretable` (the file could not be interpreted, so the
 unprofiled home was used) or `astra_ultra_wrapper_candidate`. A stdlib reader
-decodes block- and flow-style YAML only for those fields. It reports `unparsed`
-rather than guessing. Each source's `server_count` is the number it declares;
-`listed_server_count` counts the rows listed across sources (at most 100 per
-source, and a name in several scopes once per scope). `status` is `unverified`
-(configured, not observed), `not_configured` or `incomplete` (a source or entry
-could not be inspected, a source declared more than 100 servers, or the
-wrapper's profile was absent; see `warnings`). Plugins, managed policy,
-connectors, CLI flags and wrappers can change the native set.
+decodes block- and flow-style YAML only for those fields and reports `unparsed`
+rather than guessing; a server entry is `malformed` (not a mapping) or
+`unparsed` (an `enabled` or `tools.include` value whose meaning depends on
+Hermes's YAML loader). `tests/hermes_mcp_corpus.json` pins the reader against
+Hermes's readings under PyYAML and under its ruamel YAML 1.1 loader. Each
+source's `server_count` is the number it declares; `listed_server_count` counts
+the rows listed across sources (at most 100 per source, and a name in several
+scopes once per scope). `status` is `unverified` (configured, not observed),
+`not_configured` or `incomplete` (a source or entry could not be inspected, a
+source declared more than 100 servers, or the wrapper's profile was absent; see
+`warnings`). Plugins, managed policy, connectors, CLI flags and wrappers can
+change the native set.
 
 ## Subscription bridge (`codex_token.py`)
 

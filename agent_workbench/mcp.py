@@ -139,8 +139,11 @@ def _yaml_flow(text: str, at: int, schema=True) -> tuple[object, int]:
                 raise _Unparsed
             items.append(item)
         else:
-            key, at = _yaml_flow(text, at, None if schema is None else True)
-            if schema is not None and key is not None and not isinstance(key, str):
+            start = _yaml_skip(text, at)
+            key, at = _yaml_flow(text, start, None if schema is None else True)
+            # As in block style, a plain merge key could inject decoded settings.
+            if schema is not None and (key is not None and not isinstance(key, str)
+                                       or key == "<<" and text[start] not in "\"'"):
                 raise _Unparsed
             child, value, at = _yaml_child(schema, key), None, _yaml_skip(text, at)
             if text.startswith(":", at):
@@ -335,15 +338,22 @@ def _codex_server(entry: dict) -> dict:
 
 def _hermes_server(entry: dict) -> dict:
     # Hermes's own readings: absent enabled means on, absent trust means full,
-    # and tools.include (a name/glob or a list of them) is a whitelist.
+    # and tools.include (a name/glob or a list of them) is a whitelist. Other
+    # enabled words, and an include that looks like a number or boolean, depend
+    # on how Hermes's YAML loader types them (0.0 is off; n is off under ruamel
+    # but on under PyYAML; an include of 5 is ignored), so they are not guessed.
     shape = {}
     if entry.get("enabled") is not None:
         word = entry["enabled"].strip().lower() if isinstance(entry["enabled"], str) else None
-        shape["enabled"] = True if word in _YAML_TRUE else False if word in _YAML_FALSE else "[invalid boolean withheld]"
+        if word not in _YAML_TRUE | _YAML_FALSE:
+            return {"status": "unparsed"}
+        shape["enabled"] = word in _YAML_TRUE
     if entry.get("trust") is not None:
         word = entry["trust"].strip().lower() if isinstance(entry["trust"], str) else None
         shape["trust"] = word if word in {"full", "untrusted"} else "[unrecognized trust withheld]"
     include = entry["tools"].get("include") if isinstance(entry.get("tools"), dict) else None
+    if isinstance(include, str) and (re.match(r"[-+.0-9]", include) or include.lower() in _YAML_TRUE | _YAML_FALSE | {"y", "n"}):
+        return {"status": "unparsed"}
     if isinstance(include, (list, str)):
         shape["tools_include_count"] = len(include) if isinstance(include, list) else 1
     return shape
@@ -364,7 +374,7 @@ def _source(label: str, scope: str, status: str, servers: object, shape=None) ->
 
 def _report(sources: list, limitations: list, warnings: list, *, incomplete: bool = False, **extra) -> dict:
     for row in sources:
-        failed = sum(server.get("status") == "malformed" for server in row["servers"])
+        failed = sum("status" in server for server in row["servers"])
         if row["status"] not in {"read", "absent"}:
             warnings.append(f"MCP servers in {row['source']} could not be inspected ({row['status']}); unlisted servers may be inherited.")
         if failed:
@@ -464,7 +474,8 @@ def mcp_inventory(harness: str, project: Path | None, *, home: Path | None = Non
             status = "unparsed"
     label = _label(path, home)
     limitations = ["Plugin-provided, managed-scope and last-known-good fallback configuration are not inspected; Hermes also skips entries it judges suspicious.",
-                   "A minimal reader takes names, enabled, trust and tools.include counts; YAML it does not interpret is reported as unparsed."]
+                   "A minimal reader takes names, enabled, trust and tools.include counts; constructs among those fields that it does not interpret are reported as unparsed.",
+                   "YAML that Hermes rejects (some tab or flow-indicator placements, for example) can still be read here; Hermes then falls back to its last-known-good configuration."]
     wrapper_unseen = harness == "hermes-astra-ultra" and status == "absent"
     if harness == "hermes-astra-ultra":
         limitations.append("The hermes-astra-ultra wrapper was not executed; it may set its own HERMES_HOME, so this profile is a candidate.")

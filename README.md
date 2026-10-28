@@ -90,13 +90,16 @@ keeps account state in `~/.claude.json`, and it can hold a saved API key:
 Workbench parses it in memory, only `mcpServers` names leave it, and the
 inventory's `account_state_file_read` records the read. Codex names come from
 `config.toml`. Hermes names come from the selected profile's `config.yaml`, read
-by a minimal stdlib parser that reports `unparsed` for YAML it does not
-interpret. A listed server is configured, not observed. Plugins, managed policy,
-connectors, CLI flags and wrappers can change the set, and `incomplete` marks a
-source that could not be inspected. The bundled `hermes-astra-ultra` launcher
-selects `profiles/astra-ultra` in the `HERMES_HOME` installation, which is what
-Workbench inspects. A wrapper that sets its own `HERMES_HOME` is not run, so its
-profile remains a candidate.
+by a minimal stdlib parser. It reports `unparsed` for constructs it does not
+interpret among the fields it decodes, and for `enabled` or `tools.include`
+values whose meaning depends on Hermes's YAML loader. YAML that Hermes rejects
+can still be read here, while Hermes falls back to its last-known-good
+configuration. A listed server is configured, not observed. Plugins, managed
+policy, connectors, CLI flags and wrappers can change the set, and `incomplete`
+marks a source that could not be inspected. The bundled `hermes-astra-ultra`
+launcher selects `profiles/astra-ultra` in the `HERMES_HOME` installation, which
+is what Workbench inspects. A wrapper that sets its own `HERMES_HOME` is not
+run, so its profile remains a candidate.
 
 Before each attempt, the runner records a private `launch.json` and uses the
 selected absolute entry point. This explains PATH drift between shells without

@@ -33,7 +33,7 @@ mcp_servers:
       - task_*
   telescope:
     command: private-command
-    enabled: false
+    enabled: false  # off
     trust: untrusted
     tools: {include: []}
   public:
@@ -153,7 +153,8 @@ class McpInventoryTests(unittest.TestCase):
 
     def test_hermes_block_and_flow_yaml_give_the_same_inventory(self):
         for style, text in (("block", HERMES_BLOCK), ("flow", HERMES_FLOW), ("wrapped flow", HERMES_WRAPPED),
-                            ("crlf block", HERMES_BLOCK.replace("\n", "\r\n")), ("document marker", "---\n" + HERMES_BLOCK)):
+                            ("crlf block", HERMES_BLOCK.replace("\n", "\r\n")), ("document marker", "---\n" + HERMES_BLOCK),
+                            ("byte order mark", "\ufeff" + HERMES_FLOW)):
             with self.subTest(style=style):
                 self.write(".hermes/config.yaml", text)
                 report = self.inventory("hermes")
@@ -176,6 +177,15 @@ class McpInventoryTests(unittest.TestCase):
         cases = {"unterminated flow": "mcp_servers: {a: {enabled: true}\n",
                  "alias server": "mcp_servers:\n  a: &s {enabled: false}\n  b: *s\n",
                  "merge key": "mcp_servers:\n  a:\n    <<: {enabled: false}\n",
+                 "flow merge key": "mcp_servers: {a: {<<: {enabled: false}}}\n",
+                 "flow merge key in a block server": "mcp_servers:\n  a: {<<: {trust: untrusted}}\n",
+                 "flow merge of servers": "mcp_servers: {<<: {a: {}}, b: {}}\n",
+                 "flow merge at the top level": "{<<: {mcp_servers: {a: {}}}}\n",
+                 "flow alias server": "mcp_servers: {a: &s {enabled: false}, b: *s}\n",
+                 "flow tag": "mcp_servers: {a: {enabled: !!str false}}\n",
+                 "flow duplicate server": "mcp_servers: {a: {}, a: {}}\n",
+                 "deeper row after a flow value": "mcp_servers: {a: {}}\n  b: {}\n",
+                 "multi-line quoted flag": "mcp_servers:\n  a:\n    trust: 'unt\n      rusted'\n",
                  "block scalar flag": "mcp_servers:\n  a:\n    enabled: |\n      false\n",
                  "tag": "mcp_servers: !!map\n  a: {}\n",
                  "tab indentation": "mcp_servers:\n\ta: {}\n",
@@ -202,6 +212,27 @@ class McpInventoryTests(unittest.TestCase):
         self.assertEqual((report["status"], report["sources"][0]["servers"]),
                          ("incomplete", [{"name": "a", "status": "malformed"}, {"name": "b"}]))
         self.assertIn("1 MCP server entry", report["warnings"][0])
+        # YAML loaders type these differently (0.0 is off, an include of 5 is ignored).
+        self.write(".hermes/config.yaml", "mcp_servers:\n  a: {enabled: 0.0}\n  b: {tools: {include: 5}}\n  c: {enabled: off}\n")
+        report = self.inventory("hermes")
+        self.assertEqual((report["status"], report["sources"][0]["servers"]),
+                         ("incomplete", [{"name": "a", "status": "unparsed"}, {"name": "b", "status": "unparsed"},
+                                         {"name": "c", "enabled": False}]))
+        self.assertIn("2 MCP server entries", report["warnings"][0])
+
+    def test_fixed_corpus_matches_hermes_or_is_unparsed(self):
+        # Each expectation was checked once against Hermes's own value rules under
+        # PyYAML and under Hermes's ruamel YAML 1.1 loader (see "about").
+        corpus = json.loads((Path(__file__).parent / "hermes_mcp_corpus.json").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(corpus["cases"]), 20)
+        for case in corpus["cases"]:
+            with self.subTest(case=case["case"]):
+                (self.home / ".hermes").mkdir(exist_ok=True)
+                (self.home / ".hermes/config.yaml").write_bytes(case["yaml"].encode("utf-8"))
+                report = self.inventory("hermes")
+                source = report["sources"][0]
+                self.assertEqual({"status": source["status"], "servers": source["servers"]}, case["expected"])
+                self.assert_private(report)
 
     def test_hermes_profile_selection_matches_native_resolution(self):
         root = self.home / "installation"
