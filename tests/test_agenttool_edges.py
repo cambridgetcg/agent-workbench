@@ -51,7 +51,7 @@ class SessionFileEdgeTests(unittest.TestCase):
         self.assertTrue(argv_names_collab_session_file(["agenttool-collab-host", "wait", "--session-file=" + path]))
         self.assertTrue(argv_names_collab_session_file(["sh", "-c", "agenttool-collab-host wait --session-file " + path]))
         self.assertFalse(argv_names_collab_session_file(["agenttool-collab-host", "wait", "--session-file", "$F"]))
-        receipt = json.dumps({"status": "ended", "session_file": path})
+        receipt = json.dumps({"protocol": "agenttool.collab-host/1", "status": "ended", "session_file": path})
         self.assertTrue(names_collab_session_file(receipt))
         self.assertNotIn(path, withhold_session_files(receipt))
         self.assertFalse(names_collab_session_file('{"session_file_name": "s1.json"}'))

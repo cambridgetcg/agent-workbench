@@ -47,8 +47,11 @@ git grep's pager value. A plain `grep`, `git grep` or `git log` in the first
 position keeps its words as data, unless it is given a pager option (`-O`,
 `--open-files-in-pager`) or `--ext-diff`; `NAME=value` words in front of a search
 are still checked. Everything else fails closed: a verifier that must mention a
-refused name can use grep or a pattern such as `agenttool-lobb[y]`. The lobby's
-read-only MCP view, `agenttool-lobby-mcp`, is not refused.
+refused name should run grep as the command itself (not inside `sh -c`), or use a
+pattern such as `agenttool-lobb[y]`. Scripts are split on `|`, `;`, `&` and
+newlines without regard to quotes, so `sh -c "grep -E 'a|agenttool-lobby' f"` is
+refused. A package chosen with `-p`, `--package` or `--filter` is not counted as
+run. The lobby's read-only MCP view, `agenttool-lobby-mcp`, is not refused.
 
 This is a tripwire at Workbench's own launch surface, **not a sandbox**. An agent
 task's own shell stays governed by its harness's permissions.
@@ -56,17 +59,21 @@ task's own shell stays governed by its harness's permissions.
 ## Session-file paths stay out of run state
 
 Collab writes each session's bearer to `<journal dir>/collab-sessions/<id>.json`;
-a host may also name one with `AGENTOOL_COLLAB_SESSION_FILE=<path>`,
-`--session-file <path>` or a `"session_file": "<path>"` receipt field. A workflow
-name, goal, prompt or command argument that names such a file is refused, and so
-are `note`, `steer` and live `send` text. The error never repeats the path. At
+a host may also name one with `AGENTOOL_COLLAB_SESSION_FILE=<path>` (a `$HOME/...`
+path counts; a bare `$NAME` does not), or with `--session-file <path>` or a
+`"session_file": "<path>"` receipt field. Those last two count only when the same
+text mentions Collab, because `session_file` is an ordinary name in many
+programs. A workflow name, goal, prompt or command argument that names such a
+file is refused, and so are `note`, `steer` and live `send` text. The error never repeats the path. At
 launch the composed prompt (which carries the goal when it differs) and the
 command's arguments are checked again; the saved name is not sent anywhere.
 An agent's own summary that names one shows `[Collab session file withheld]` in
 status, timeline, plan, launch output and the next agent's prompt. Handoff export
 refuses such a run and continuity notes withhold such a note. A saved prompt that
-names one fails at launch rather than being silently rewritten. Private logs stay
-private, as before. Workbench never reads, lists or checks the session folder.
+names one fails at launch rather than being silently rewritten. Withholding in
+summaries is broader than refusal and keeps a path with spaces from leaking in
+part. Private logs stay private, as before. Workbench never reads, lists or
+checks the session folder.
 
 ## See what each harness has
 

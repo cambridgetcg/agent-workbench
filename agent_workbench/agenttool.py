@@ -48,10 +48,13 @@ _CONTROL = re.compile(r"\|\||&&|\$\(|[;&|()\n`]")
 _WORD = re.compile(r"[^\s'\",\[\]{}<>]+")
 _ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _PERSONAL_WAKE = re.compile(r"(?i)\bapi\.agenttool\.dev/v1/wake(?![\w-])")
-# git grep runs the value of -O<cmd>, bundled -nO<cmd> and --open-files-in-pager=<cmd> (any abbreviation
-# from --op) through a shell with the matching paths appended, terminal or not.
-_PAGER_OPTION = re.compile(r"-[A-Za-z]*O(?P<short>.*)\Z|--op[^=]*(?:=(?P<long>.*))?\Z", re.S)
-_SCOPED_PACKAGE = re.compile(r"(?i)@agenttool/([a-z0-9][a-z0-9._-]*)")
+# git grep runs the value of -O<cmd>, bundled -nO<cmd> or -5O<cmd>, and --open-files-in-pager=<cmd> (any
+# abbreviation from --op) through a shell with the matching paths appended, terminal or not.
+_PAGER_OPTION = re.compile(r"-[A-Za-z0-9]*O(?P<short>.*)\Z|--op[^=]*(?:=(?P<long>.*))?\Z", re.S)
+# A whole package spec a runner would install and run: @agenttool/lobby, npm:@agenttool/collab-courier@0.1.0.
+_SCOPED_PACKAGE = re.compile(r"(?i)(?:npm:)?@agenttool/([a-z0-9][a-z0-9._-]*)(?:@[^/]*)?\Z")
+# Options whose value chooses a package or workspace rather than running it.
+_SELECTOR_OPTIONS = {"-p", "--package", "--filter", "-F", "-w", "--workspace"}
 
 
 def _pager_value(word) -> str:
@@ -95,18 +98,25 @@ def _is_search(words) -> bool:
     return name == "git" and len(words) > 1 and words[1] in {"grep", "log"}
 
 
-def _stems(word) -> list[str]:
+def _is_whole_search(argv, segments) -> bool:
+    """Only argv[0] itself can make the whole command a search, and never with a pager option."""
+    return (bool(argv) and segments[0][:1] == [argv[0]] and _is_search(segments[0])
+            and not any(_PAGER_OPTION.match(element) for element in argv))
+
+
+def _stems(word, selector=False) -> list[str]:
     """The command names a word could invoke: itself, a NAME=value or --option=value value, a pager value."""
     candidates = [word]
     if "=" in word:
         candidates.append(word.split("=", 1)[1])
     if pager := _pager_value(word):
         candidates.append(pager)
-    candidates += [f"agenttool-{name}" for name in _SCOPED_PACKAGE.findall(word)]
+    if not selector and word.split("=", 1)[0] not in _SELECTOR_OPTIONS:
+        candidates += [f"agenttool-{match.group(1)}" for match in map(_SCOPED_PACKAGE.match, candidates[:2]) if match]
     stems = []
     for candidate in candidates:
         stem = PurePath(candidate).name.lower() if candidate else ""
-        # A package runner's spec pins a version: collab-zerone@0.3.0, npm:@agenttool/collab-courier@latest.
+        # A package runner's spec pins a version: collab-zerone@0.3.0, agenttool-lobby@1.0.0.
         if (at := stem.find("@", 1)) > 0:
             stem = stem[:at]
         for extension in _EXTENSIONS:
@@ -119,7 +129,7 @@ def _stems(word) -> list[str]:
 
 def _segment_reason(words) -> str | None:
     for index, word in enumerate(words):
-        for stem in _stems(word):
+        for stem in _stems(word, index > 0 and words[index - 1] in _SELECTOR_OPTIONS):
             for names, later, reason in REFUSED_STEMS:
                 if stem in names and (later is None or later in words[index + 1:]):
                     return reason
@@ -135,9 +145,7 @@ def _segment_reason(words) -> str | None:
 def refused_command(argv) -> str | None:
     """Why Workbench must not run this command task, or None. Fails closed on mentions."""
     segments = _segments(argv)
-    # Only argv[0] itself can make the whole command a search, and never with a pager option.
-    if (argv and segments[0][:1] == [argv[0]] and _is_search(segments[0])
-            and not any(_PAGER_OPTION.match(element) for element in argv)):
+    if _is_whole_search(argv, segments):
         return None
     for index, words in enumerate(segments):
         if index and _is_search(words):
@@ -150,54 +158,103 @@ def refused_command(argv) -> str | None:
 
 # --- Collab session credential-file locators ---------------------------------
 
-# Collab writes each session's bearer to <journal dir>/collab-sessions/<id>.json; a host may also
-# name the file with AGENTOOL_COLLAB_SESSION_FILE, --session-file or a "session_file" receipt field.
-SESSION_FILE_NAME = re.compile(r"(?i)collab-sessions[/\\][A-Za-z0-9_.:-]+\.json(?![A-Za-z0-9_])")
-_PATH_VALUE = r"(?=[^\s\"'$}]*(?:[/\\]|\.json(?!\w)))([^\s\"'$},;][^\s\"',;}]*)"
-SESSION_FILE_ASSIGNMENT = re.compile(r"(?<![{\w])(AGENTOOL_COLLAB_SESSION_FILE[\"']?\s*[:=]\s*[\"']?)" + _PATH_VALUE)
-SESSION_FILE_OPTION = re.compile(r"(?<![\w-])(--session-file(?:=|\s+)[\"']?|[\"']?session_file[\"']?\s*[:=]\s*[\"']?)"
-                                 + _PATH_VALUE)
-SESSION_FILE_PATTERNS = (SESSION_FILE_NAME, SESSION_FILE_ASSIGNMENT, SESSION_FILE_OPTION)
+# Collab writes each session's bearer to <journal dir>/collab-sessions/<id>.json (also JSON-escaped). A host
+# may name the file with AGENTOOL_COLLAB_SESSION_FILE (always a Collab name), or with --session-file or a
+# session_file field, which count only next to a mention of Collab: session_file is an ordinary identifier.
+SESSION_FILE_NAME = re.compile(r"(?i)collab-sessions(?:[/\\]|\\\\|\\/)[A-Za-z0-9_.:-]+\.json(?![A-Za-z0-9_])")
+_VALUE = r"(\"[^\"\n]*\"|'[^'\n]*'|(?:\$\{\w+\}|[^\s\"',;}\\]|\\.)+)"
+SESSION_FILE_ASSIGNMENT = re.compile(r"(?<!\w)(AGENTOOL_COLLAB_SESSION_FILE[\"']?[ \t]*(?::-|:=|[:=])[ \t]*)" + _VALUE)
+SESSION_FILE_OPTION = re.compile(r"(?<![\w-])(--session-file(?:=|[ \t]+)|[\"']?session_file[\"']?[ \t]*[:=][ \t]*)" + _VALUE)
+_LOOKS_LIKE_PATH = re.compile(r"[/\\]|\.json(?!\w)")
+_BARE_VARIABLE = re.compile(r"\$(?:\w+|\{\w+\})")
+_COLLAB_CONTEXT = re.compile(r"(?i)(?<![A-Za-z0-9])(?:agenttool[-_ .]?collab|collab)(?![A-Za-z0-9])")
 SESSION_FILE_REFUSAL = ("names a Collab session credential file. Workbench keeps these paths out of prompts, "
                         "commands and run state; refer to the session by its ID and let the agent's own Collab "
                         "tools find it.")
 WITHHELD = "[Collab session file withheld]"
 _TOKEN_END = " \t\r\n\"'`<>"
+_PATH_ROOT = re.compile(r"~?[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\]")
+
+
+def _is_path_value(value: str) -> bool:
+    value = value.strip("\"'")
+    return bool(_LOOKS_LIKE_PATH.search(value)) and not _BARE_VARIABLE.fullmatch(value)
+
+
+def _names_path(pattern, text) -> bool:
+    return any(_is_path_value(match.group(2)) for match in pattern.finditer(text))
 
 
 def names_collab_session_file(text) -> bool:
-    """Linear-time detection; the optional path prefix matters only when withholding."""
-    return isinstance(text, str) and any(pattern.search(text) for pattern in SESSION_FILE_PATTERNS)
+    """Linear-time detection of a Collab session credential-file path in text."""
+    if not isinstance(text, str):
+        return False
+    if SESSION_FILE_NAME.search(text) or _names_path(SESSION_FILE_ASSIGNMENT, text):
+        return True
+    return bool(_COLLAB_CONTEXT.search(text)) and _names_path(SESSION_FILE_OPTION, text)
 
 
 def argv_names_collab_session_file(argv) -> bool:
-    """Also the two-word form: --session-file followed by a literal path."""
-    return (any(names_collab_session_file(element) for element in argv)
-            or any(flag == "--session-file" and value and not value.startswith("$")
-                   for flag, value in zip(argv, argv[1:])))
+    """Also the two-word form: --session-file followed by a path, for Collab's own host command."""
+    if any(names_collab_session_file(element) for element in argv):
+        return True
+    segments = _segments(argv)
+    if _is_whole_search(argv, segments):
+        return False  # a search's later words are patterns and paths, never its options
+    if not any(_COLLAB_CONTEXT.search(element) for element in argv):
+        return False
+    host = any("agenttool-collab-host" in _stems(word) for word in segments[0])
+    values = [value for flag, value in zip(argv, argv[1:]) if flag == "--session-file"]
+    values += [element.split("=", 1)[1] for element in argv if element.startswith("--session-file=")]
+    return any(value and not _BARE_VARIABLE.fullmatch(value.strip("\"'")) and (host or _is_path_value(value))
+               for value in values)
+
+
+def _token_start(text, index, floor):
+    while index > floor and text[index - 1] not in _TOKEN_END:
+        if text[index - 2:index] == "](":
+            break  # a Markdown link target starts here
+        index -= 1
+    return index
 
 
 def _withhold_locators(text: str) -> str:
     pieces, last = [], 0
     for match in SESSION_FILE_NAME.finditer(text):
-        start = match.start()
-        while start > last and text[start - 1] not in _TOKEN_END:
-            start -= 1
-        # A quoted path may contain spaces: withhold up to its opening quote on the same line.
-        if match.end() < len(text) and text[match.end()] in "\"'":
-            quote = text[match.end()]
-            opening = text.rfind(quote, last, match.start())
-            if opening >= 0 and "\n" not in text[opening:match.start()]:
-                start = opening + 1
+        start = _token_start(text, match.start(), last)
+        if start < match.start() and not _PATH_ROOT.match(text, start):
+            # The tail of a longer path with spaces ("Application Support/...", "My\ Files/..."):
+            # walk back over at most four words on the same line to the word where the path begins.
+            line = max(last, text.rfind("\n", last, start) + 1)
+            probe = start
+            for _ in range(4):
+                if probe <= line or text[probe - 1] not in " \t":
+                    break
+                previous = _token_start(text, probe - 1, line)
+                if previous == probe - 1:
+                    break
+                if _PATH_ROOT.match(text, previous):
+                    start = previous
+                    break
+                probe = previous
         pieces += [text[last:start], WITHHELD]
         last = match.end()
     return "".join(pieces + [text[last:]])
 
 
+def _withhold_value(match) -> str:
+    value = match.group(2)
+    if not _is_path_value(value):
+        return match.group(0)
+    quote = value[0] if len(value) > 1 and value[0] in "\"'" and value[-1] == value[0] else ""
+    return match.group(1) + quote + WITHHELD + quote
+
+
 def withhold_session_files(text: str) -> str:
+    """Replace session-file paths, a path with spaces whole; broader than detection, so it errs toward hiding."""
     text = _withhold_locators(text)
     for pattern in (SESSION_FILE_ASSIGNMENT, SESSION_FILE_OPTION):
-        text = pattern.sub(lambda match: match.group(1) + WITHHELD, text)
+        text = pattern.sub(_withhold_value, text)
     return text
 
 
@@ -236,6 +293,15 @@ _MAX_DEPTH = 24
 # PyYAML's printable set plus tab and newlines; anything else makes Hermes reject the whole file.
 _NOT_YAML_PRINTABLE = re.compile("[^\t\n\r\x20-\x7e\x85\xa0-퟿-�\U00010000-\U0010ffff]|[\x85  ]")
 _TOP_KEY = re.compile(r"""["']?mcp_servers["']?\s*:""")
+# Top-level lines that cannot hide an mcp_servers key: plain keys, list items, document markers, directives.
+_PLAIN_TOP = re.compile(r"(?:[A-Za-z_][\w.-]*\s*:(?:\s|$)|- |-$|---\s*(?:#.*)?$|\.\.\.\s*(?:#.*)?$|%)")
+# PyYAML's YAML 1.1 resolvers for plain scalars.
+_YAML_NULL = re.compile(r"~|null|Null|NULL")
+_YAML_BOOL = re.compile(r"yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF")
+_YAML_NUMBER = re.compile(
+    r"[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+"
+    r"|[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?"
+    r"|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)")
 
 
 class _Unparsed(ValueError):
@@ -244,6 +310,13 @@ class _Unparsed(ValueError):
 
 class _Invalid(_Unparsed):
     """YAML that PyYAML rejects: Hermes then loads no servers from the file at all."""
+
+
+class _PlainNumber(str):
+    """A plain scalar PyYAML resolves to a number: Hermes sees a number, never a name."""
+
+
+_NO_TOOLS = object()  # Hermes fails a server whose `tools` is not a mapping and registers none of its tools
 
 
 def _strip_comment(content: str) -> str:
@@ -261,9 +334,8 @@ def _strip_comment(content: str) -> str:
 
 def _flow_list(text: str) -> list:
     """A flow sequence of scalars, such as args: ["-y", "pkg"]; anything nested is outside the subset."""
-    inner = text[1:-1]
     items, current, quote = [], "", None
-    for char in inner:
+    for char in text[1:-1]:
         if quote:
             current += char
             if char == quote:
@@ -295,20 +367,28 @@ def _scalar(text: str):
     if text[0] == "[" and text.endswith("]"):
         return _flow_list(text)
     if text[0] == '"':
-        if len(text) < 2 or not text.endswith('"'):
+        if not re.fullmatch(r'"(?:[^"\\]|\\.)*"', text):
             raise _Invalid()
         try:
             return json.loads(text)
         except ValueError:
             raise _Unparsed() from None
     if text[0] == "'":
-        if len(text) < 2 or not text.endswith("'"):
+        if not re.fullmatch(r"'(?:[^']|'')*'", text):
             raise _Invalid()
         return text[1:-1].replace("''", "'")
-    if text[0] in "{[&*!|>%@`?":
+    if text[0] in "{[&*!|>":
         raise _Unparsed()
+    if text[0] in ",]}%@`" or text == "-" or text.startswith(("- ", "? ")):
+        raise _Invalid()
     if ": " in text or text.endswith(":") or " #" in text:
         raise _Invalid()  # PyYAML rejects a mapping indicator inside a plain value
+    if _YAML_NULL.fullmatch(text):
+        return None
+    if _YAML_BOOL.fullmatch(text):
+        return text.lower() in ("yes", "true", "on")
+    if _YAML_NUMBER.fullmatch(text):
+        return _PlainNumber(text)
     return text
 
 
@@ -320,8 +400,8 @@ def _yaml_list(items, index, indent):
     values = []
     while index < len(items) and items[index][0] == indent and _is_item(items[index][1]):
         item = items[index][1][1:].strip()
-        if not item or ": " in item or item.endswith(":"):
-            raise _Unparsed()  # sequences of mappings or nested blocks
+        if not item or ": " in item or item.endswith(":") or _is_item(item):
+            raise _Unparsed()  # sequences of mappings, nested sequences or nested blocks
         values.append(_scalar(item))
         index += 1
     if index < len(items) and items[index][0] > indent:
@@ -361,30 +441,49 @@ def _yaml_mapping(items, index, indent, depth=0):
     return result, index
 
 
+def _invalid_elsewhere(lines, start) -> bool:
+    """Cheap whole-file checks for errors that make PyYAML, and so Hermes, reject every server."""
+    for number, line in enumerate(lines):
+        indent = line[:len(line) - len(line.lstrip(" \t"))]
+        if "\t" in indent and line.strip():
+            return True
+        if number != start and line[:1] not in " \t#" and line.strip():
+            match = re.match(r"[A-Za-z_][\w.-]*\s*:\s+(.*)$", line)
+            value = _strip_comment(match.group(1)).strip() if match else ""
+            if value and value[0] not in "\"'{[&*!|>" and (
+                    ": " in value or value.endswith(":") or value == "-" or value.startswith("- ")):
+                return True
+    return False
+
+
 def _hermes_servers(text: str) -> tuple[dict | None, str]:
     """Block-style subset of Hermes's column-0 ``mcp_servers:`` only; other YAML is unparsed, never absent."""
     text = text.removeprefix("﻿")
     if _NOT_YAML_PRINTABLE.search(text):
         return None, "unparsed"
-    lines = text.replace("\r\n", "\n").split("\n")
-    body = [line for line in lines if line.strip() and not line.lstrip().startswith("#")
-            and not line.startswith(("---", "%"))]
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    live = [line for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    body = [line for line in live if not re.match(r"(?:---|\.\.\.)\s*(?:#.*)?$|%", line)]
     if body and body[0].lstrip()[:1] in "{[":
         return None, "unparsed"  # a flow-style or JSON document
     starts = [i for i, line in enumerate(lines) if _TOP_KEY.match(line)]
     if not starts:
-        return {}, "no_mcp_servers"
-    if len(starts) > 1 or not re.match(r"mcp_servers:\s*(?:(?:\{\}|null|~)\s*)?(?:#.*)?$", lines[starts[0]]):
-        return None, "unparsed"  # quoted key, anchor, tag, inline value, or a repeated key (PyYAML keeps the last)
+        certain = (not any("mcp_servers" in line or "\\" in line for line in live)
+                   and not (body and body[0][:1] in " \t")  # a document indented as a whole
+                   and all(_PLAIN_TOP.match(line) for line in live if line[:1] not in " \t"))
+        return ({}, "no_mcp_servers") if certain else (None, "unparsed")
     start = starts[0]
+    others = [line for i, line in enumerate(lines) if i != start and line[:1] not in " \t#" and "mcp_servers" in line]
+    if others or not re.match(r"mcp_servers:(?:\s+(?:(?:\{\}|null|~)\s*)?(?:#.*)?)?$", lines[start]):
+        return None, "unparsed"  # quoted key, anchor, tag, inline value, or a repeated key (PyYAML keeps the last)
+    if _invalid_elsewhere(lines, start):
+        return None, "unparsed"
     if _strip_comment(lines[start].split(":", 1)[1].strip()):
         return {}, "read"
     items = []
     for line in lines[start + 1:]:
         if line and line[0] not in " \t#":
             break
-        if "\t" in line:
-            return None, "unparsed"
         content = _strip_comment(line.lstrip(" "))
         if content:
             items.append((len(line) - len(line.lstrip(" ")), content))
@@ -396,8 +495,16 @@ def _hermes_servers(text: str) -> tuple[dict | None, str]:
         level, content = items[index]
         if level != indent or content.startswith("-") or ":" not in content:
             return None, "unparsed"
-        name, _, rest = content.partition(":")
-        if not name or name in servers:
+        raw_name, _, rest = content.partition(":")
+        name = raw_name.rstrip(" ")
+        if not name or name[0] in "?&*!|>%@`{[":
+            return None, "unparsed"  # an anchored, tagged or complex key: PyYAML's real name is unknown
+        if name[0] in "'\"":
+            try:
+                name = _scalar(name)
+            except _Unparsed:
+                return None, "unparsed"
+        if not isinstance(name, str) or not name or name in servers:
             return None, "unparsed"
         index += 1
         end = index
@@ -432,30 +539,38 @@ def _stem_of(value) -> str:
 
 
 def _classify(entry: dict):
-    """(kind, display endpoint, credentials carried in the URL)."""
-    url = entry.get("url")
-    if isinstance(url, str):
+    """(kind, display endpoint, credentials carried in the URL). A url key means HTTP, as in Hermes."""
+    arguments = entry.get("args") if isinstance(entry.get("args"), list) else []
+    words = [entry.get("command"), *arguments]
+    stems = [_stem_of(word) for word in words]
+    local = "collab" if "agenttool-collab-mcp" in stems else "lobby_view" if "agenttool-lobby-mcp" in stems else None
+    if "url" in entry:
+        url = entry.get("url")
         try:
-            parts = urlsplit(url)
-            host = parts.hostname
-            in_url = bool(parts.username or parts.password or parts.query)
+            parts = urlsplit(url.strip()) if isinstance(url, str) else None
+            host = parts.hostname if parts else None
+            in_url = bool(parts and (parts.username or parts.password or parts.query))
         except ValueError:
-            return None, None, False
+            parts, host, in_url = None, None, False
+        usable = parts is not None and parts.scheme in {"http", "https"} and host
+        if not usable:
+            if (isinstance(url, str) and "${" in url) or any(isinstance(w, str) and "${" in w for w in words):
+                return "unresolved", None, False
+            mentions = local or (isinstance(url, str) and AGENTTOOL_HOST in url.lower())
+            return ("unusable_entry", None, False) if mentions else (None, None, False)
         if host != AGENTTOOL_HOST:
-            return None, None, False
+            return ("unresolved" if "${" in url else None), None, False
         path = parts.path.rstrip("/")
         for kind, (endpoint, _) in PUBLIC_ENDPOINTS.items():
             if path == endpoint:
-                return kind, f"https://{AGENTTOOL_HOST}{endpoint}", in_url
+                return kind, f"{parts.scheme}://{AGENTTOOL_HOST}{endpoint}", in_url
         if path.startswith("/v1/mcp/agents/"):
-            return "agent_scoped", f"https://{AGENTTOOL_HOST}/v1/mcp/agents/[agent id withheld]", in_url
-        return "unrecognised_agenttool_endpoint", f"https://{AGENTTOOL_HOST}/[path withheld]", in_url
-    arguments = entry.get("args") if isinstance(entry.get("args"), list) else []
-    stems = [_stem_of(word) for word in [entry.get("command"), *arguments]]
-    if "agenttool-collab-mcp" in stems:
-        return "collab", None, False
-    if "agenttool-lobby-mcp" in stems:
-        return "lobby_view", None, False
+            return "agent_scoped", f"{parts.scheme}://{AGENTTOOL_HOST}/v1/mcp/agents/[agent id withheld]", in_url
+        return "unrecognised_agenttool_endpoint", f"{parts.scheme}://{AGENTTOOL_HOST}/[path withheld]", in_url
+    if local:
+        return local, None, False
+    if any(isinstance(word, str) and "${" in word for word in words):
+        return "unresolved", None, False
     return None, None, False
 
 
@@ -472,7 +587,7 @@ def _tool_fit(configured, expected):
 
 def _names(values) -> list[str]:
     from .capabilities import _name
-    return sorted({_name(value) for value in values if isinstance(value, str)})
+    return sorted({_name(value) for value in values if isinstance(value, str) and not isinstance(value, _PlainNumber)})
 
 
 def _collab_package(entry: dict) -> dict:
@@ -496,35 +611,42 @@ def _collab_package(entry: dict) -> dict:
 
 
 def _enabled(value) -> bool:
-    """Like Hermes's own reading: only an explicit no turns a server off."""
+    """Hermes's _parse_boolish with default True: only an explicit no turns a server off."""
+    if value is None or isinstance(value, _PlainNumber):
+        return True
+    if isinstance(value, bool):
+        return value
     if isinstance(value, str):
-        return value.strip().lower() not in {"false", "no", "off"}
-    return value is not False
+        return value.strip().lower() not in {"false", "0", "no", "off"}
+    return True
 
 
 def _server_row(name, entry, source, scope, tool_filter):
     from .capabilities import _name
     kind, endpoint, credentials_in_url = _classify(entry)
-    if kind is None:
-        return None
+    if kind is None or kind == "unresolved":
+        return kind
     environment = entry.get("env") if isinstance(entry.get("env"), dict) else {}
     env_names = [key for key in environment if isinstance(key, str) and _ENV_NAME.fullmatch(key)]
     if isinstance(entry.get("env_vars"), list):
         env_names += [key for key in entry["env_vars"] if isinstance(key, str) and _ENV_NAME.fullmatch(key)]
     expected = PUBLIC_ENDPOINTS[kind][1] if kind in PUBLIC_ENDPOINTS else None
-    allow, deny = tool_filter if tool_filter else (None, set())
-    configured = None if allow is None and not deny else (set(allow) if allow is not None else set(expected or ())) - deny
+    if tool_filter is _NO_TOOLS:
+        tools = _tool_fit(set(), expected) if expected else {**_tool_fit(None, None), "fit": "none_registered"}
+    else:
+        allow, deny = tool_filter if tool_filter else (None, set())
+        configured = None if allow is None and not deny else (set(allow) if allow is not None else set(expected or ())) - deny
+        tools = _tool_fit(configured if expected else None, expected)
     row = {"name": _name(name), "source": source, "scope": scope, "kind": kind,
-           "transport": "http" if isinstance(entry.get("url"), str) else "stdio" if entry.get("command") else "unknown",
-           "enabled": _enabled(entry.get("enabled", True)),
-           "tools": _tool_fit(configured if expected else None, expected),
+           "transport": "http" if "url" in entry else "stdio" if entry.get("command") else "unknown",
+           "enabled": _enabled(entry.get("enabled", True)), "tools": tools,
            "environment_names": sorted(set(env_names)),
            "credentials_configured": credentials_in_url or any(
                bool(entry.get(key)) and str(entry.get(key)).strip().lower() not in _FALSE_WORDS for key in _CREDENTIAL_KEYS),
            "warnings": []}
     if endpoint:
         row["endpoint"] = endpoint
-    else:
+    elif kind in {"collab", "lobby_view"}:
         command = entry.get("command")
         row["command"] = _name(PurePath(command).name) if isinstance(command, str) else None
         row["entry"] = "agenttool-collab-mcp.js" if kind == "collab" else "agenttool-lobby-mcp.js"
@@ -536,6 +658,12 @@ def _server_row(name, entry, source, scope, tool_filter):
         if "AGENTTOOL_COLLAB_DB" in env_names and "AGENTOOL_COLLAB_DB" not in env_names:
             row["warnings"].append({"code": "misspelled_journal", "message":
                                     "Collab reads AGENTOOL_COLLAB_DB (one T); this server uses the default journal"})
+    if tool_filter is _NO_TOOLS:
+        row["warnings"].append({"code": "tools_not_mapping", "message":
+                                "tools is not a mapping (include:/exclude:); Hermes fails this server and registers none of its tools"})
+    if kind == "unusable_entry":
+        row["warnings"].append({"code": "unusable_url", "message":
+                                "has a url key the harness will use, but it is not an http(s) URL; this server will not start"})
     if row["credentials_configured"] and kind not in {"collab", "lobby_view"}:
         row["warnings"].append({"code": "credentials", "message":
                                 "configured with credentials: outside the public-tools boundary"})
@@ -548,13 +676,13 @@ def _server_row(name, entry, source, scope, tool_filter):
     return row
 
 
-def _collect(rows, taken, servers, source, scope, filter_of) -> int:
-    """Append AgentTool rows; return how many other servers were seen (never named).
+def _collect(rows, taken, servers, source, scope, filter_of) -> tuple[int, int]:
+    """Append AgentTool rows; return (other servers, servers whose ${...} placeholders hide what they are).
 
     ``taken`` gathers every server name, only so a suggestion never reuses one;
-    it never enters the report.
+    it never enters the report. Other servers are never named.
     """
-    other = 0
+    other = unresolved = 0
     taken.update(name for name in servers if isinstance(name, str))
     for name, entry in servers.items():
         if not isinstance(entry, dict):
@@ -562,9 +690,11 @@ def _collect(rows, taken, servers, source, scope, filter_of) -> int:
         row = _server_row(name, entry, source, scope, filter_of(entry))
         if row is None:
             other += 1
+        elif row == "unresolved":
+            unresolved += 1
         else:
             rows.append(row)
-    return other
+    return other, unresolved
 
 
 def _codex_filter(entry):
@@ -574,12 +704,27 @@ def _codex_filter(entry):
             set(_names(disabled)) if isinstance(disabled, list) else set())
 
 
+def _yaml_falsy(value) -> bool:
+    if isinstance(value, _PlainNumber):
+        try:
+            return float(value.replace("_", "")) == 0
+        except ValueError:
+            return False
+    return not value
+
+
 def _hermes_filter(entry):
-    """Hermes: a non-empty include wins and exclude is ignored; a string is one name; empty means no filter."""
-    tools = entry.get("tools") if isinstance(entry.get("tools"), dict) else {}
+    """Hermes: `tools or {}`; a non-empty include wins and exclude is ignored; a string is one name."""
+    tools = entry.get("tools")
+    if not isinstance(tools, dict):
+        if not _yaml_falsy(tools):
+            return _NO_TOOLS
+        tools = {}
 
     def names(value):
-        return {value} if isinstance(value, str) else set(_names(value)) if isinstance(value, list) else set()
+        if isinstance(value, str) and not isinstance(value, _PlainNumber):
+            return {value}
+        return set(_names(value)) if isinstance(value, list) else set()
 
     include, exclude = names(tools.get("include")), names(tools.get("exclude"))
     return (include, set()) if include else (None, exclude)
@@ -605,9 +750,10 @@ def _complete(row) -> bool:
     return row["tools"]["fit"] in {"exact", "superset", "unrestricted", "not_compared"}
 
 
-def _harness(rows, sources, other, unparsed=0, **extra):
-    return {"sources": sources, "servers": rows, "summary": _summary(rows, sources, unparsed),
-            "other_server_count": other, "unparsed_server_count": unparsed, **extra}
+def _harness(rows, sources, other, unparsed=0, unresolved=0, **extra):
+    return {"sources": sources, "servers": rows, "summary": _summary(rows, sources, unparsed + unresolved),
+            "other_server_count": other, "unparsed_server_count": unparsed, "unresolved_server_count": unresolved,
+            **extra}
 
 
 def _codex_section(home, project, env):
@@ -616,7 +762,7 @@ def _codex_section(home, project, env):
     candidates = [(root / "config.toml", "$CODEX_HOME/config.toml" if env.get("CODEX_HOME") else "~/.codex/config.toml", "user")]
     if project is not None:
         candidates.append((project / ".codex/config.toml", "$PROJECT/.codex/config.toml", "project"))
-    rows, sources, other, seen, taken = [], [], 0, set(), set()
+    rows, sources, other, unresolved, seen, taken = [], [], 0, 0, set(), set()
     for path, label, scope in candidates:
         try:
             resolved = path.resolve()
@@ -629,32 +775,35 @@ def _codex_section(home, project, env):
         sources.append({"source": label, "status": status, "reader": "toml"})
         servers = data.get("mcp_servers") if data else None
         if isinstance(servers, dict):
-            other += _collect(rows, taken, servers, label, scope, _codex_filter)
-    return _harness(rows, sources, other), taken
+            counts = _collect(rows, taken, servers, label, scope, _codex_filter)
+            other, unresolved = other + counts[0], unresolved + counts[1]
+    return _harness(rows, sources, other, unresolved=unresolved), taken
 
 
 def _claude_section(home, project, env):
     from .capabilities import _read, _root
     root = _root(env.get("CLAUDE_CONFIG_DIR"), home, home)
     label = "$CLAUDE_CONFIG_DIR/.claude.json" if env.get("CLAUDE_CONFIG_DIR") else "~/.claude.json"
-    rows, sources, other, taken = [], [], 0, set()
+    rows, sources, other, unresolved, taken = [], [], 0, 0, set()
     data, status = _read(root / ".claude.json")
     sources.append({"source": label, "status": status, "reader": "json", "kept": "mcpServers objects only"})
+    scoped = []
     if data:
-        scoped = [(data.get("mcpServers"), "user")]
+        scoped.append((data.get("mcpServers"), label, "user"))
         projects = data.get("projects") if isinstance(data.get("projects"), dict) else {}
         if project is not None and isinstance(projects.get(str(project.resolve())), dict):
-            scoped.append((projects[str(project.resolve())].get("mcpServers"), "local"))
+            scoped.append((projects[str(project.resolve())].get("mcpServers"), label, "local"))
         data = None  # Account state is never kept past this point.
-        for servers, scope in scoped:
-            if isinstance(servers, dict):
-                other += _collect(rows, taken, servers, label, scope, lambda entry: None)
     if project is not None:
         shared, status = _read(project / ".mcp.json")
         sources.append({"source": "$PROJECT/.mcp.json", "status": status, "reader": "json"})
-        if shared and isinstance(shared.get("mcpServers"), dict):
-            other += _collect(rows, taken, shared["mcpServers"], "$PROJECT/.mcp.json", "project", lambda entry: None)
-    return _harness(rows, sources, other), taken
+        if shared:
+            scoped.append((shared.get("mcpServers"), "$PROJECT/.mcp.json", "project"))
+    for servers, source, scope in scoped:
+        if isinstance(servers, dict):
+            counts = _collect(rows, taken, servers, source, scope, lambda entry: None)
+            other, unresolved = other + counts[0], unresolved + counts[1]
+    return _harness(rows, sources, other, unresolved=unresolved), taken
 
 
 def _hermes_section(path, label, active_profile=None, managed=None):
@@ -662,7 +811,7 @@ def _hermes_section(path, label, active_profile=None, managed=None):
     raw, status = _read_bytes(path)
     source = {"source": label, "status": status, "reader": "yaml-subset"}
     sources = [source]
-    rows, other, unparsed, taken = [], 0, 0, set()
+    rows, other, unparsed, unresolved, taken = [], 0, 0, 0, set()
     if raw is not None:
         try:
             servers, parse = _hermes_servers(raw.decode("utf-8"))
@@ -671,12 +820,12 @@ def _hermes_section(path, label, active_profile=None, managed=None):
         source["parse"] = parse
         if servers:
             unparsed = sum(entry is None for entry in servers.values())
-            other = _collect(rows, taken, servers, label, "profile", _hermes_filter)
+            other, unresolved = _collect(rows, taken, servers, label, "profile", _hermes_filter)
     if managed:
         # Hermes merges its managed scope over the user file; it is not read here, so absence is unknown.
         sources.append({"source": managed, "status": "not_read", "reader": "none"})
     extra = {"active_profile_file": active_profile} if active_profile is not None else {}
-    return _harness(rows, sources, other, unparsed, **extra), taken
+    return _harness(rows, sources, other, unparsed, unresolved, **extra), taken
 
 
 def _safe_section(label, build):
@@ -771,9 +920,11 @@ def wiring(*, home, project, env) -> dict:
         "~/.claude.json holds account state as well as MCP servers; it is parsed in memory and only mcpServers objects are kept.",
         "Claude managed or remote MCP, plugin-provided servers, project-server approval, --mcp-config and "
         "--strict-mcp-config are not evaluated.",
-        "Hermes config.yaml is read with a block-style subset reader; other YAML is reported unparsed and its tools as unknown.",
+        "Hermes config.yaml is read with a block-style subset reader of the mcp_servers block plus a few common "
+        "whole-file errors; a YAML error elsewhere makes Hermes load no MCP servers at all, which may go unnoticed here.",
         "Hermes's managed scope ($HERMES_MANAGED_DIR or /etc/hermes) can add servers and is not read; when it exists, "
         "Hermes surfaces read unknown. A HERMES_MANAGED_DIR set only in Hermes's own launch environment is not seen.",
+        "Servers whose url or command uses ${...} placeholders are counted as unresolved; their surfaces read unknown.",
         "Whether Claude Code accepts the dotted tool names of /v1/mcp was not verified; check /mcp in a new session.",
     ]
     if active == "present":
@@ -808,9 +959,10 @@ def _surface_text(surface, state, rows):
             collab = row.get("collab", {})
             host = {"present": "host command present", "absent": "host command absent"}.get(collab.get("host_cli"),
                                                                                              "host command unknown")
-            return f"Collab {collab.get('package_version') or 'version unknown'} ({host})"
+            registered = "" if _complete(row) else ", no tools registered"
+            return f"Collab {collab.get('package_version') or 'version unknown'} ({host}{registered})"
         if surface == "lobby_view":
-            return "lobby view configured"
+            return "lobby view configured" if _complete(row) else "lobby view configured, no tools registered"
         tools = row["tools"]
         if tools["fit"] == "unrestricted":
             return f"{_LABELS[surface]} all tools (no tool filter)"
@@ -836,11 +988,10 @@ def format_lines(section: dict) -> list[str]:
             text = _surface_text(surface, data["summary"][surface], rows)
             if text:
                 parts.append(text)
-        if data.get("other_server_count"):
-            count = data["other_server_count"]
-            parts.append(f"{count} other server{'s' if count != 1 else ''}")
-        if data.get("unparsed_server_count"):
-            parts.append(f"{data['unparsed_server_count']} unparsed")
+        for key, label in (("other_server_count", "other server"), ("unparsed_server_count", "unparsed"),
+                           ("unresolved_server_count", "unresolved (${...} placeholder)")):
+            if count := data.get(key):
+                parts.append(f"{count} {label}{'s' if key == 'other_server_count' and count != 1 else ''}")
         unread = [source["source"] for source in data.get("sources", []) if source["status"] not in ("read", "absent")]
         if unread:
             parts.append("not read: " + ", ".join(unread))

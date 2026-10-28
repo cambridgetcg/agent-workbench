@@ -350,25 +350,39 @@ Nothing here starts a process, opens a Collab journal or uses the network.
   including `NAME=value` and `--option=value` values, for the AgentTool lobby CLI,
   Collab courier, `collab-zerone ... anchor`, hosted mission prefixes,
   `agenttool-collab-host ... end` and `api.agenttool.dev/v1/wake`, and any `room`
-  segment with `--lease`. Segments led by `grep`, `egrep`, `fgrep`, `git grep` or
-  `git log` (no git global options, no pager option) are data. Fails closed.
+  segment with `--lease`. A command led by `grep`, `egrep`, `fgrep`, `git grep` or
+  `git log` in argv[0] (no git global options, no pager option such as `-O`,
+  `-5O<cmd>` or `--open-files-in-pager`, no `--ext-diff`) is data; inside a script
+  only the `NAME=value` words in front of such a search are checked. Package specs
+  (`name@version`, `@agenttool/<name>`) count unless they follow a selector such as
+  `-p`, `--package` or `--filter`. Fails closed.
 - `launch_refusal(task, prompt) -> str | None` returns `Task <id> <reason>`.
 - `names_collab_session_file(text) -> bool` matches, in linear time, a concrete
-  `collab-sessions/<id>.json` locator, or an `AGENTOOL_COLLAB_SESSION_FILE`,
-  `--session-file` or `session_file` value that looks like a path;
+  `collab-sessions/<id>.json` locator (any case, also JSON-escaped) or an
+  `AGENTOOL_COLLAB_SESSION_FILE` value that looks like a path (including `$HOME/...`
+  and `${AGENTOOL_COLLAB_SESSION_FILE:-/path}`; a bare `$NAME` is not a path). A
+  `--session-file` or `session_file` value counts only when the same text mentions
+  Collab, because `session_file` is an ordinary identifier.
   `argv_names_collab_session_file(argv)` also sees `--session-file <path>` as two
-  words; `withhold_session_files(text) -> str` replaces them (a quoted path whole)
-  with `[Collab session file withheld]`; `SESSION_FILE_PATTERNS` holds the three
-  detection patterns. `bridge.request_native` refuses such live input.
+  words (any literal value for `agenttool-collab-host`) and skips plain searches.
+  `withhold_session_files(text) -> str` replaces every such path, a path with
+  spaces whole, with `[Collab session file withheld]`; it is broader than
+  detection, so it errs toward hiding. `handoff.contains_credential_text` uses
+  `names_collab_session_file`; `bridge.request_native` refuses such live input.
 - `wiring(*, home, project, env) -> dict` reports configured (not observed)
   AgentTool servers for `codex`, `claude`, `hermes` and `hermes-astra-ultra`,
   classified by endpoint or command; names never values; other servers only
   counted; suggestions for missing public servers are printed, never applied.
   Tool filters follow each harness (Codex `disabled_tools` always removes; Hermes
-  non-empty `include` wins). Hermes `config.yaml` is read with a block-style subset
-  reader of `mcp_servers`; YAML that PyYAML would reject, or that the subset cannot
-  read, is `unparsed`, never absent. A section that cannot be read is `unknown`
-  and never stops doctor.
+  uses `tools or {}`, a non-empty `include` wins, and a `tools` value that is not a
+  mapping registers no tools). Hermes `config.yaml` is read with a block-style
+  subset reader of the `mcp_servers` block, resolving plain scalars as PyYAML does,
+  plus a few common whole-file errors; what the subset cannot read is `unparsed`,
+  and absence is claimed only when no top-level key could hide `mcp_servers`. A
+  YAML error elsewhere in the file, which makes Hermes load no MCP servers, may go
+  unnoticed. Servers whose url or command holds `${...}` are `unresolved`; a `url`
+  key that is not an http(s) URL is `unusable_entry`. A section that cannot be
+  read is `unknown` and never stops doctor.
 - `format_lines(section) -> list[str]` renders that section for `format_report`.
 
 ## Read-only views (`views.py`)

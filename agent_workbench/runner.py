@@ -39,6 +39,8 @@ _RETRYABLE = {"failed", "cancelled", "interrupted"}
 _EXECUTABLES = {"codex": "codex", "claude": "claude", "astra": "claude-astra", "astra-ultra": "claude-astra-ultra",
                 "hermes": "hermes", "hermes-astra-ultra": "hermes-astra-ultra"}
 _HERMES = {"hermes", "hermes-astra-ultra"}
+# CSI, OSC (ended by BEL or ST) and other ESC sequences such as tput sgr0's ESC ( B, plus shift-in/out.
+_TERMINAL_CODES = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[0-~])|[\x0e\x0f]")
 _EXTENDED_CLEANUP = {"astra", "astra-ultra", *_HERMES}
 # Current Hermes says "N file edit(s) FAILED"; builds from mid-2026 say "N file(s) were NOT modified".
 _HERMES_FILE_MUTATION = re.compile(r"(?m)^[ \t]*(?:\u26a0\ufe0f?)?[ \t]*File-mutation verifier:[ \t]*(\d{1,6}) "
@@ -79,7 +81,7 @@ def redact_summary(value: object, limit: int | None = SUMMARY_LIMIT) -> str:
     text = re.sub(r"(?i)((?:access[_-]?token|refresh[_-]?token|api[_-]?key|authorization|password|secret)\s*[\"']?\s*[:=]\s*[\"']?)[^\s\"',;}]+", r"\1[redacted]", text)
     text = re.sub(r"(?i)(https?://)[^/@\s]+:[^/@\s]+@", r"\1[redacted]@", text)
     text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[email redacted]", text)
-    text = withhold_session_files(re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text))
+    text = withhold_session_files(_TERMINAL_CODES.sub("", text))
     return text if limit is None or len(text) <= limit else text[:max(0, limit - 15)] + "\n[truncated]"
 
 
