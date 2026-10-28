@@ -164,6 +164,28 @@ class ViewTests(unittest.TestCase):
             self.assertNotIn(value, data)
         self.assertIn("redact", data)
 
+    def test_closed_record_reads_differently_from_a_removal(self):
+        state = run_state("succeeded")
+        state["tasks"][0].update(status="succeeded", attempts=[
+            {"id": "gone", "status": "succeeded", "workspace": {
+                "mode": "worktree", "owned": True, "retained": False, "dirty": True,
+                "removal_basis": "absent_outside_workbench", "possible_unpushed_loss": True,
+                "final_head_on_remote_ref": None, "recorded_dirty": True, "removed_head": None}}])
+        state["events"] = [
+            {"kind": "workspace_removed", "at": "2026-10-28T00:00:01", "task_id": "first", "attempt_id": "kept",
+             "removal_basis": "head_on_remote_ref"},
+            {"kind": "workspace_removed", "at": "2026-10-28T00:00:02", "task_id": "first", "attempt_id": "gone",
+             "removal_basis": "absent_outside_workbench", "possible_unpushed_loss": True,
+             "final_head_on_remote_ref": None, "recorded_dirty": True}]
+        removed, closed = timeline_view(state)["entries"]
+        self.assertEqual(removed["removal_basis"], "head_on_remote_ref")
+        self.assertNotIn("possible_unpushed_loss", removed)
+        self.assertEqual((closed["removal_basis"], closed["possible_unpushed_loss"], closed["final_head_on_remote_ref"],
+                          closed["recorded_dirty"]), ("absent_outside_workbench", True, None, True))
+        workspace = status_details(state)["tasks"]["first"]["latest_attempt"]["workspace"]
+        self.assertEqual((workspace["retained"], workspace["removal_basis"], workspace["possible_unpushed_loss"]),
+                         (False, "absent_outside_workbench", True))
+
     def test_timeline_limit_is_bounded_and_validated(self):
         state = run_state()
         for limit in (0, -1, 201, True, 1.0, "20", None):

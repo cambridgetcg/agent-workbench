@@ -183,8 +183,11 @@ not just exit code zero with a JSON error. Command success is exit code zero.
   `final_head_on_remote_ref` is not true) and `observed_absent_at`. For this basis
   `removed_at` is when the record was closed, not when the tree was removed. The
   `workspace_removed` event carries the basis, `possible_unpushed_loss`,
-  `final_head_on_remote_ref` and `recorded_dirty` as scalars. A directory or
-  symbolic link found at the root is handled, and refused, as before.
+  `final_head_on_remote_ref` and `recorded_dirty` as scalars; `timeline` shows
+  them, and `status` shows the latest attempt's `removal_basis` and
+  `possible_unpushed_loss`, so a closed record never reads as a removal. A
+  directory or symbolic link found at the root is handled, and refused, as
+  before.
 
 Read-only is a declaration, not OS enforcement, except that Codex receives its
 native read-only sandbox. Worktrees are retained by default.
