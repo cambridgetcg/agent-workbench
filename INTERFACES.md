@@ -269,8 +269,10 @@ command is started, no session is ended, and no credential file is opened.
   key; `providers` is never read) that keeps `command`, block-list `args` and
   block-mapping `env` and reports flow style, anchors, aliases, tags, merge keys
   and tabs as unparsed. A collab entry's args name `agenttool-collab-mcp` (or, for
-  Hermes, its name is `agenttool`); the lobby's name is `agenttool-lobby`. The
-  journal is the entries' absolute `env.AGENTOOL_COLLAB_DB`. Entries that disagree,
+  Hermes, its name is `agenttool`); the lobby's name is `agenttool-lobby`. An
+  unparsed server under another name cannot be classified, so with no collab entry
+  found the result is `registration_unparsed` (doctor: `registered: null`), not
+  `collab_not_registered`. The journal is the entries' absolute `env.AGENTOOL_COLLAB_DB`. Entries that disagree,
   a missing location beside a set one, or a Workbench `AGENTOOL_COLLAB_DB` that
   differs (after `os.path.realpath`) give `journal_ambiguous`; no location gives
   `journal_unconfigured`. Other failures: `collab_not_registered`,

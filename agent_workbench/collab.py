@@ -342,7 +342,8 @@ def registrations(harness, *, home=None, env=None):
     config = _host_config(harness, home, env)
     if config is None:
         return {"harness": harness, "config": None, "config_status": "not_applicable", "entries": []}
-    result = {"harness": harness, "config": config["label"], "profile": config.get("profile"), "entries": []}
+    result = {"harness": harness, "config": config["label"], "profile": config.get("profile"), "entries": [],
+              "unclassified_unparsed": 0}
     if config.get("failure"):
         result["config_status"] = config["failure"]
         return result
@@ -374,6 +375,10 @@ def registrations(harness, *, home=None, env=None):
         if kind is not None:
             entry["kind"] = kind
             result["entries"].append(entry)
+        elif entry["unparsed"]:
+            # Its command and args were not kept, so it may be a collab
+            # registration under another name: unknown, not absent.
+            result["unclassified_unparsed"] += 1
     return result
 
 
@@ -395,7 +400,7 @@ def resolve_journal(harness, *, home=None, env=None):
         return result
     entries = [entry for entry in found["entries"] if entry["kind"] == "collab"]
     if not entries:
-        result["failure"] = "collab_not_registered"
+        result["failure"] = "registration_unparsed" if found.get("unclassified_unparsed") else "collab_not_registered"
         return result
     if any(entry["unparsed"] for entry in entries):
         result["failure"] = "registration_unparsed"
@@ -815,7 +820,9 @@ def agenttool_report(*, home=None, env=None):
                        "application_id_ok": True if kind == "sqlite_collab" else False if kind == "sqlite_other" else None,
                        "user_version": outcome["user_version"], "newer_tables": outcome["newer_tables"]}
             resolved_paths[harness] = resolved["real"]
-        row["collab"] = {"registered": bool(collab_entries), "registrations": listed, "journal": journal}
+        unparsed = found.get("unclassified_unparsed", 0)
+        row["collab"] = {"registered": True if collab_entries else None if unparsed else False,
+                         "unclassified_unparsed": unparsed, "registrations": listed, "journal": journal}
         if HARNESS_HOSTS[harness] in {"claude", "codex"}:
             lobby = [entry for entry in found["entries"] if entry["kind"] == "lobby"]
             row["lobby"] = {"registered": bool(lobby), "registrations": [
@@ -844,8 +851,13 @@ def format_agenttool(report):
                     + (f", user_version {journal['user_version']}" if journal["user_version"] is not None else "")
                     + (", newer tables present" if journal["newer_tables"] else "")
                     + (f", bundle {', '.join(versions)}" if versions else ", bundle version unknown"))
+        elif row["config_status"] not in {"read", "absent"}:
+            text = f"configuration {row['config_status']}"
+        elif collab_row["registered"] is None:
+            count = collab_row["unclassified_unparsed"]
+            text = f"collab registration unknown ({count} server{'' if count == 1 else 's'} unparsed)"
         else:
-            text = "collab not registered" if row["config_status"] in {"read", "absent"} else f"configuration {row['config_status']}"
+            text = "collab not registered"
         if "lobby" in row:
             lobby = row["lobby"]["registrations"]
             if lobby:

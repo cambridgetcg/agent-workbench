@@ -435,6 +435,26 @@ class JournalResolutionTests(CollabTestCase):
                 self.assertEqual(collab.registrations(harness, home=self.home, env=self.env)["config_status"], "read")
                 self.assertEqual(self.resolve(harness)["real"], str(self.journal))
 
+    def test_an_unparsed_server_under_another_name_is_unknown_not_absent(self):
+        bodies = ("mcp_servers:\n  collab:\n    command: bun\n    args: [run, /x/dist/agenttool-collab-mcp.js]\n",
+                  "mcp_servers:\n  agenttool-collab:\n    command: bun\n    env: {AGENTOOL_COLLAB_DB: /x/j.sqlite}\n",
+                  "mcp_servers:\n  collab: &c\n    command: bun\n")
+        for body in bodies:
+            with self.subTest(body=body[14:40]):
+                self.register_hermes(body=body)
+                self.assertEqual(self.resolve("hermes-astra-ultra")["failure"], "registration_unparsed")
+                report = collab.agenttool_report(home=self.home, env=self.env)
+                row = report["harnesses"]["hermes-astra-ultra"]["collab"]
+                self.assertEqual((row["registered"], row["unclassified_unparsed"]), (None, 1))
+                self.assertIn("hermes-astra-ultra (~/.hermes/profiles/astra-ultra/config.yaml): collab registration "
+                              "unknown (1 server unparsed)", "\n".join(collab.format_agenttool(report)))
+        # A parsed collab registration beside an unrelated unparsed server still resolves.
+        self.register_hermes(body="mcp_servers:\n  other:\n    args: [a, b]\n  agenttool:\n    command: bun\n    env:\n"
+                                  f"      AGENTOOL_COLLAB_DB: {json.dumps(str(self.journal))}\n")
+        self.assertEqual(self.resolve("hermes-astra-ultra")["real"], str(self.journal))
+        self.register_hermes(body="mcp_servers:\n  other:\n    command: x\n")
+        self.assertEqual(self.resolve("hermes-astra-ultra")["failure"], "collab_not_registered")
+
     def test_scanner_reads_only_the_column_zero_mcp_servers_block(self):
         text = ("providers:\n  p:\n    key_cmd: SENTINEL_KEY_CMD\nmcp_servers:\n  agenttool:\n    command: bun\n"
                 "    args:\n      - run\n      - 'it''s.js'\n    env:\n      AGENTOOL_COLLAB_DB: \"/j.sqlite\"  # journal\n"
